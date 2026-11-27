@@ -116,8 +116,10 @@ pub fn handle(input: &Input) -> anyhow::Result<Option<Value>> {
         _ => Verdict::default(),
     };
 
-    // A pause lets everything through except the agent tampering with Agent Guard.
+    // A pause lets everything through, unchanged, except the agent tampering with Agent Guard.
     let effective = if paused && verdict.level() != Level::HardBlock {
+        replaced = None;
+        context.clear();
         Verdict::default()
     } else {
         verdict
