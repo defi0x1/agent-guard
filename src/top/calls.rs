@@ -107,6 +107,18 @@ pub fn sparkline(counts: &[u64]) -> String {
         .collect()
 }
 
+/// A share from 0 to 1 as a bar `width` cells wide, in eighths.
+pub fn bar(share: f32, width: usize) -> String {
+    const PARTS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+    let eighths = (share.clamp(0.0, 1.0) * (width * 8) as f32).round() as usize;
+    let mut s: String = "█".repeat(eighths / 8);
+    let part = eighths % 8;
+    if part > 0 {
+        s.push(PARTS[part]);
+    }
+    format!("{s:<width$}")
+}
+
 /// Seconds as `✓` (under a second), `3s`, `2m` or `1h`.
 pub fn duration(secs: u64) -> String {
     match secs {
@@ -322,6 +334,9 @@ mod tests {
         assert_eq!(sparkline(&[0, 1, 3, 6]), "▁▃▅█");
         assert_eq!(sparkline(&[1, 100]), "▂█");
         assert_eq!(sparkline(&[0, 0]), "▁▁");
+        assert_eq!(bar(0.5, 4), "██  ");
+        assert_eq!(bar(1.0 / 16.0, 2), "▏ ");
+        assert_eq!(bar(7.0, 2), "██");
     }
 
     #[test]

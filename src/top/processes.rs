@@ -1,4 +1,4 @@
-//! The Processes tab: the tree of agent processes.
+//! The Agents tab: the tree of agent processes, with a CPU activity bar refreshed every 2 s.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Row, Table, TableState};
 
 use crate::text::term_safe;
 use crate::top::app::App;
+use crate::top::calls;
 use crate::top::ui::selected_style;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App) {
@@ -24,6 +25,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             r.proc.pid.to_string(),
             format!("{indent}{}", term_safe(&r.proc.name)),
             format!("{:.1}", r.proc.cpu),
+            calls::bar(r.proc.cpu / 100.0, 8),
             r.conns.to_string(),
             remote,
         ])
@@ -32,17 +34,18 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(8),
         Constraint::Fill(1),
         Constraint::Length(6),
+        Constraint::Length(8),
         Constraint::Length(6),
         Constraint::Fill(1),
     ];
     let title = if app.snap.rows.is_empty() {
-        " Processes: no agent running "
+        " Agents: no agent running "
     } else {
-        " Processes "
+        " Agents "
     };
     let table = Table::new(rows, widths)
         .header(
-            Row::new(["pid", "name", "cpu%", "conns", "last remote"])
+            Row::new(["pid", "name", "cpu%", "activity", "conns", "last remote"])
                 .style(Style::default().add_modifier(Modifier::BOLD)),
         )
         .row_highlight_style(selected_style())
