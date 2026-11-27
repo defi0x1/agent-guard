@@ -11,7 +11,9 @@
     "PostToolUse": [
       {
         "matcher": "*",
-        "hooks": [{ "type": "command", "command": "guard hook", "timeout": 10 }]
+        "hooks": [
+          { "type": "command", "command": "guard hook", "timeout": 10, "onFailure": "block" }
+        ]
       }
     ],
     "UserPromptSubmit": [

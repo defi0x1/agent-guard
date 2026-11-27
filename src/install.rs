@@ -357,8 +357,9 @@ pub fn uninstall_at(settings: &Path, backups: &Path) -> anyhow::Result<Outcome> 
 /// The hook group install adds for `event`.
 fn group(event: &str, matcher: bool, command: &str) -> Value {
     let mut hook = json!({"type": "command", "command": command, "timeout": TIMEOUT});
-    if event == "PreToolUse" {
-        // A crashed or timed-out guard blocks the call instead of letting it through.
+    if matches!(event, "PreToolUse" | "PostToolUse") {
+        // A crashed or timed-out guard blocks the call, or withholds a result it could not
+        // clean, instead of letting it through silently.
         hook["onFailure"] = json!("block");
     }
     if matcher {
@@ -472,7 +473,13 @@ fn write_settings(path: &Path, s: &Map<String, Value>) -> anyhow::Result<()> {
     }
     let mut text = serde_json::to_string_pretty(s)?;
     text.push('\n');
-    home::write_private(path, text.as_bytes())
+    // Settings kept in a dotfiles folder under the home dir (a symlink) are written in place.
+    let parent = path.parent().unwrap_or(path).to_path_buf();
+    let root = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| path.starts_with(h))
+        .unwrap_or(parent);
+    home::write_atomic(path, text.as_bytes(), Some(0o600), &root)
         .with_context(|| format!("writing {}", path.display()))
 }
 
@@ -754,10 +761,9 @@ mod tests {
         assert_eq!(pre["hooks"][0]["timeout"], 10);
         assert_eq!(pre["hooks"][0]["onFailure"], "block");
         assert_eq!(s["hooks"]["PostToolUse"][0]["matcher"], "*");
-        assert!(
-            s["hooks"]["PostToolUse"][0]["hooks"][0]
-                .get("onFailure")
-                .is_none()
+        assert_eq!(
+            s["hooks"]["PostToolUse"][0]["hooks"][0]["onFailure"],
+            "block"
         );
         assert!(s["hooks"]["UserPromptSubmit"][0].get("matcher").is_none());
         assert_eq!(s["hooks"]["SessionStart"][0]["hooks"][0]["command"], cmd);
