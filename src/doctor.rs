@@ -92,6 +92,19 @@ impl Env {
         out
     }
 
+    /// The directory a write to `path` must stay in, through any symlink: the project for a
+    /// project file, else the home directory, else the file's own directory.
+    pub fn write_root(&self, path: &Path) -> PathBuf {
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        [&self.cwd, &self.home]
+            .into_iter()
+            .find(|r| path.starts_with(r) || path.starts_with(canon(r)))
+            .map_or_else(
+                || path.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                |r| r.to_path_buf(),
+            )
+    }
+
     /// `path` with the home directory shown as `~`.
     pub fn tilde(&self, path: &Path) -> String {
         match path.strip_prefix(&self.home) {
@@ -347,4 +360,70 @@ pub fn run(fix_id: Option<&str>, undo_last: bool) -> anyhow::Result<()> {
         println!("{l}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    fn env(tmp: &Path) -> Env {
+        let (home, cwd) = (tmp.join("home"), tmp.join("proj"));
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        Env {
+            guard_home: tmp.join("guard"),
+            desktop_config: home.join("desktop.json"),
+            config: Config::default(),
+            vars: BTreeMap::new(),
+            claude_version: None,
+            git_version: None,
+            npm_version: |_| None,
+            now: 1_700_000_000,
+            home,
+            cwd,
+        }
+    }
+
+    fn settings(path: &Path, mode: u32) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, r#"{"enableAllProjectMcpServers": true}"#).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn fix_ignores_a_planted_temp_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = env(tmp.path());
+        let hooks = env.cwd.join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let file = env.cwd.join(".claude/settings.json");
+        settings(&file, 0o755);
+        symlink(
+            "../.git/hooks/pre-commit",
+            env.cwd.join(".claude/settings.json.guard-tmp"),
+        )
+        .unwrap();
+        fix(&env, "D08").unwrap();
+        assert!(!hooks.join("pre-commit").exists());
+        let v: serde_json::Value = home::read_json(&file).unwrap();
+        assert_eq!(v["enableAllProjectMcpServers"], false);
+    }
+
+    #[test]
+    fn fix_refuses_a_project_file_that_leads_outside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = env(tmp.path());
+        let outside = tmp.path().join("outside.json");
+        settings(&outside, 0o600);
+        fs::create_dir_all(env.cwd.join(".claude")).unwrap();
+        symlink(&outside, env.cwd.join(".claude/settings.json")).unwrap();
+        assert!(fix(&env, "D08").is_err());
+        assert!(
+            fs::read_to_string(&outside)
+                .unwrap()
+                .contains("\"enableAllProjectMcpServers\": true")
+        );
+    }
 }

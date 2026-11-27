@@ -2,13 +2,13 @@
 //! `.mcp.json` and Claude Desktop's config. Writes keep every other key, in order, and are atomic.
 
 use std::fs;
-use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
 use super::Env;
+use crate::home::{self, read_json};
 
 /// One MCP server entry in a config file.
 #[derive(Debug, Clone)]
@@ -136,39 +136,21 @@ pub fn escape(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
-/// The parsed file, or `None` if it is missing or not valid JSON.
-pub fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
-}
-
-/// Writes `value` as pretty JSON, atomically: a temp file next to the real one (through a
-/// symlink, to its target), then a rename. Keeps the file's mode; a new file gets 0600.
-pub fn write_json(path: &Path, value: &Value) -> io::Result<()> {
+/// Writes `value` as pretty JSON, atomically, keeping the file's mode (0600 if it is new). A
+/// symlink is followed only to a target inside `root`.
+pub fn write_json(path: &Path, value: &Value, root: &Path) -> io::Result<()> {
     let mut text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
     text.push('\n');
-    write_atomic(path, text.as_bytes())
+    write_atomic(path, text.as_bytes(), root)
 }
 
-/// Replaces `path` with `data` atomically, keeping its mode (0600 if it is new).
-pub fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mode = fs::metadata(&target).map_or(0o600, |m| m.permissions().mode() & 0o7777);
-    if let Some(dir) = target.parent() {
+/// Replaces `path` with `data` atomically, keeping its mode (0600 if it is new), creating its
+/// directory if needed. Refused if the real target is outside `root`.
+pub fn write_atomic(path: &Path, data: &[u8], root: &Path) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let mut tmp = target.clone().into_os_string();
-    tmp.push(".guard-tmp");
-    let tmp = PathBuf::from(tmp);
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    f.write_all(data)?;
-    f.sync_all()?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
-    fs::rename(&tmp, &target)
+    home::write_atomic(path, data, None, root)
 }
 
 /// The object at `key` in `obj`, created (or replaced, if it is not an object) as needed.
@@ -194,6 +176,7 @@ pub fn strings_at<'a>(doc: &'a Value, pointer: &str) -> Vec<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn write_keeps_order_mode_and_other_keys() {
@@ -201,9 +184,9 @@ mod tests {
         let p = dir.path().join("s.json");
         fs::write(&p, r#"{"zeta": 1, "alpha": {"b": 2, "a": 3}}"#).unwrap();
         fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).unwrap();
-        let mut v = read_json(&p).unwrap();
+        let mut v: Value = read_json(&p).unwrap();
         v["new"] = Value::Bool(true);
-        write_json(&p, &v).unwrap();
+        write_json(&p, &v, dir.path()).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         let (z, a, n) = (
             text.find("zeta").unwrap(),
@@ -216,7 +199,11 @@ mod tests {
             fs::metadata(&p).unwrap().permissions().mode() & 0o777,
             0o640
         );
-        assert!(!dir.path().join("s.json.guard-tmp").exists());
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "no temp file left"
+        );
     }
 
     #[test]
@@ -226,7 +213,7 @@ mod tests {
         let link = dir.path().join("link.json");
         fs::write(&real, "{}").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        write_json(&link, &serde_json::json!({"a": 1})).unwrap();
+        write_json(&link, &serde_json::json!({"a": 1}), dir.path()).unwrap();
         assert!(
             fs::symlink_metadata(&link)
                 .unwrap()

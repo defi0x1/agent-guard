@@ -68,7 +68,7 @@ impl Backup {
         let entry = match fs::read(&path) {
             Ok(data) => {
                 let copy = format!("{}.bak", self.manifest.files.len());
-                files::write_atomic(&dir.join(&copy), &data)?;
+                files::write_atomic(&dir.join(&copy), &data, &dir)?;
                 FileEntry {
                     mode: Some(fs::metadata(&path)?.permissions().mode() & 0o7777),
                     path,
@@ -127,7 +127,7 @@ impl Backup {
     fn write_manifest(&mut self) -> anyhow::Result<()> {
         let dir = self.dir()?;
         let text = serde_json::to_vec_pretty(&self.manifest)?;
-        files::write_atomic(&dir.join("manifest.json"), &text)?;
+        files::write_atomic(&dir.join("manifest.json"), &text, &dir)?;
         Ok(())
     }
 }
@@ -173,7 +173,7 @@ fn restore_dir(env: &Env, dir: &Path) -> anyhow::Result<Vec<String>> {
         match &f.copy {
             Some(copy) => {
                 let data = fs::read(dir.join(copy))?;
-                files::write_atomic(&f.path, &data)?;
+                files::write_atomic(&f.path, &data, &env.write_root(&f.path))?;
                 if let Some(mode) = f.mode {
                     fs::set_permissions(&f.path, fs::Permissions::from_mode(mode))?;
                 }

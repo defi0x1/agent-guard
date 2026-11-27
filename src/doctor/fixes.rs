@@ -48,7 +48,7 @@ fn edit(
         return Ok(changes);
     }
     backup.save_file(path)?;
-    files::write_json(path, &v)?;
+    files::write_json(path, &v, &env.write_root(path))?;
     Ok(changes
         .into_iter()
         .map(|c| format!("{c} in {}", env.tilde(path)))
