@@ -228,17 +228,22 @@ impl Store {
 /// Loads the store from `home`, adds what the current environment and source files hold, and
 /// saves it if anything changed.
 pub fn refreshed(home: &Path, cwd: &Path) -> Store {
-    let path = home.join("fingerprints.json");
-    let mut store = Store::load(&path);
-    let mut changed = store.add_env(std::env::vars());
     let mut files = vec![cwd.join(".env"), cwd.join(".mcp.json")];
     if let Some(h) = std::env::var_os("HOME") {
         files.push(PathBuf::from(h).join(".claude.json"));
     }
-    for f in &files {
+    refresh(&home.join("fingerprints.json"), &files, std::env::vars())
+}
+
+/// [`refreshed`] with its inputs given. A file whose modification time and size are unchanged
+/// is not read again, and the store is written only when something in it changed.
+fn refresh(path: &Path, files: &[PathBuf], vars: impl Iterator<Item = (String, String)>) -> Store {
+    let mut store = Store::load(path);
+    let mut changed = store.add_env(vars);
+    for f in files {
         changed |= store.add_file(f);
     }
-    if changed && let Err(e) = store.save(&path) {
+    if changed && let Err(e) = store.save(path) {
         eprintln!("agent-guard: fingerprints: {e}");
     }
     store
@@ -483,5 +488,26 @@ mod tests {
         let path = dir.path().join("fingerprints.json");
         fs::write(&path, "{not json").unwrap();
         assert!(Store::load(&path).is_empty());
+    }
+
+    #[test]
+    fn unchanged_sources_are_not_read_or_written_again() {
+        // CODE-009.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fingerprints.json");
+        let claude = dir.path().join(".claude.json");
+        let cfg =
+            serde_json::json!({ "mcpServers": { "notion": { "env": { "NOTION_TOKEN": VALUE } } } });
+        fs::write(&claude, cfg.to_string()).unwrap();
+        let files = [claude.clone(), dir.path().join(".env")];
+        let vars = || [("MY_TOKEN".to_string(), "env-Value-0123456789".to_string())].into_iter();
+        assert!(refresh(&path, &files, vars()).lookup(VALUE).is_some());
+        let written = fs::read(&path).unwrap();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let again = refresh(&path, &files, vars());
+        assert!(again.lookup(VALUE).is_some());
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), written);
     }
 }
