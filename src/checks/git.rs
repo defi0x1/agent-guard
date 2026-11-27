@@ -33,7 +33,7 @@ pub const RULES: &[(&str, &str)] = &[
     ),
     (
         "git.repo_hooks",
-        "The repository has its own git hooks, which run programs on commit, merge, rebase, push, checkout or am; trust the repo with `guard trust repo` to stop this warning.",
+        "The repository has its own git hooks, which run programs on commit, merge, pull, rebase, push, checkout or am; trust the repo with `guard trust repo` to stop this warning.",
     ),
     (
         "git.vulnerable_clone",
@@ -46,7 +46,21 @@ pub const RULES: &[(&str, &str)] = &[
 ];
 
 /// Subcommands that run the repository's hooks.
-const HOOK_SUBCOMMANDS: &[&str] = &["commit", "merge", "rebase", "push", "checkout", "am"];
+const HOOK_SUBCOMMANDS: &[&str] = &[
+    "commit",
+    "merge",
+    "rebase",
+    "push",
+    "checkout",
+    "switch",
+    "am",
+    "pull",
+    "cherry-pick",
+    "revert",
+    "stash",
+    "worktree",
+    "gc",
+];
 
 /// How long the cached `git --version` answer is used.
 const VERSION_TTL: u64 = 24 * 60 * 60;
@@ -1126,6 +1140,17 @@ mod tests {
                 .findings
                 .is_empty()
         );
+        for cmd in [
+            "git pull",
+            "git switch main",
+            "git cherry-pick a1",
+            "git revert a1",
+        ] {
+            assert_eq!(
+                rules(&run(&ctx(&f, Config::default()), cmd)),
+                ["git.repo_hooks"]
+            );
+        }
         for (preset, level) in [
             (Preset::Relaxed, Level::Green),
             (Preset::Strict, Level::Red),
