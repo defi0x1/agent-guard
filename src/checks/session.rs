@@ -116,11 +116,13 @@ fn setup_diff(ctx: &Ctx, user_home: &Path, v: &mut Verdict) {
     ));
 }
 
+/// A label and detail for a message, each cut to 80 characters (the inventory keeps them whole).
 fn describe(label: &str, detail: &str) -> String {
+    let label = clip(label, 80);
     if detail.is_empty() {
-        label.to_string()
+        label
     } else {
-        format!("{label} ({detail})")
+        format!("{label} ({})", clip(detail, 80))
     }
 }
 
@@ -182,12 +184,13 @@ fn snapshot(user_home: &Path, cwd: &Path) -> Inventory {
     inv
 }
 
-/// A short, redacted detail for the inventory and messages.
-fn short(s: &str) -> String {
-    clip(&secrets::redact(s.trim()), 80)
+/// A redacted label or detail for the inventory.
+fn redacted(s: &str) -> String {
+    secrets::redact(s.trim())
 }
 
-/// `{"name": {"command": "npx", "args": [...]}}` or `{"name": {"url": "..."}}`.
+/// `{"name": {"command": "npx", "args": [...], "env": {...}}}` or `{"name": {"url": "...",
+/// "headers": {...}}}`. Env and header values are kept only as a hash, so a changed key shows.
 fn mcp_servers(v: Option<&Value>, out: &mut BTreeMap<String, String>) {
     let Some(servers) = v.and_then(Value::as_object) else {
         return;
@@ -207,11 +210,30 @@ fn mcp_servers(v: Option<&Value>, out: &mut BTreeMap<String, String>) {
                 words.join(" ")
             }
         };
-        out.insert(format!("MCP server '{name}'"), short(&detail));
+        let mut detail = redacted(&detail);
+        for key in ["env", "headers"] {
+            let Some(vars) = s
+                .get(key)
+                .and_then(Value::as_object)
+                .filter(|m| !m.is_empty())
+            else {
+                continue;
+            };
+            let vars: Vec<String> = vars
+                .iter()
+                .map(|(k, v)| {
+                    let v = v.as_str().map_or_else(|| v.to_string(), str::to_string);
+                    format!("{k}={}", &hash(&v)[..12])
+                })
+                .collect();
+            detail.push_str(&format!(" {key}: {}", vars.join(", ")));
+        }
+        out.insert(format!("MCP server '{name}'"), detail);
     }
 }
 
-/// `{"Event": [{"matcher": "...", "hooks": [{"type": "command", "command": "..."}]}]}`.
+/// `{"Event": [{"matcher": "...", "hooks": [{"type": "command", "command": "..."}]}]}`. Hooks of
+/// other types (`http`, `prompt`, `agent`) are named by their type and URL or prompt.
 fn hooks(v: Option<&Value>, out: &mut BTreeMap<String, String>) {
     let Some(events) = v.and_then(Value::as_object) else {
         return;
@@ -223,9 +245,15 @@ fn hooks(v: Option<&Value>, out: &mut BTreeMap<String, String>) {
             .filter_map(|g| g.get("hooks").and_then(Value::as_array))
             .flatten()
         {
-            if let Some(cmd) = h.get("command").and_then(Value::as_str) {
-                out.insert(format!("{event} hook '{}'", short(cmd)), String::new());
-            }
+            let what = ["command", "url", "prompt"]
+                .iter()
+                .find_map(|k| h.get(k).and_then(Value::as_str))
+                .map_or_else(|| h.to_string(), str::to_string);
+            let label = match h.get("type").and_then(Value::as_str) {
+                None | Some("command") => format!("{event} hook '{}'", redacted(&what)),
+                Some(kind) => format!("{event} {kind} hook '{}'", redacted(&what)),
+            };
+            out.insert(label, String::new());
         }
     }
 }
@@ -246,7 +274,7 @@ fn plugins(v: &Value, out: &mut BTreeMap<String, String>) {
         }
         let entry = info.as_array().and_then(|a| a.first()).unwrap_or(info);
         let version = entry.get("version").and_then(Value::as_str).unwrap_or("");
-        out.insert(format!("plugin '{name}'"), short(version));
+        out.insert(format!("plugin '{name}'"), redacted(version));
     }
 }
 
@@ -712,6 +740,48 @@ mod tests {
         assert!(msg.contains("And 1 more."), "{msg}");
         let inv: Inventory = read_json(&e.ctx.home.join("inventory.json")).unwrap();
         assert_eq!(inv["user"]["plugin 'pdf@market'"], "1.2.0");
+    }
+
+    #[test]
+    fn changes_past_80_characters_env_and_other_hooks_show() {
+        let e = env();
+        let long = format!("bash {}/x.sh", "a".repeat(100));
+        let settings = e.user.join(".claude/settings.json");
+        let claude = e.user.join(".claude.json");
+        let hooks = |cmd: &str, url: &str| {
+            json!({"hooks": {"PreToolUse": [{"hooks": [
+                {"type": "command", "command": cmd},
+                {"type": "http", "url": url},
+            ]}]}})
+        };
+        write(
+            &settings,
+            hooks(&format!("{long} one"), "https://a.example"),
+        );
+        write(
+            &claude,
+            json!({"mcpServers": {"db": {"command": "db-mcp", "env": {"TOKEN": "one"}}}}),
+        );
+        assert!(diff(&e).findings.is_empty());
+
+        write(
+            &settings,
+            hooks(&format!("{long} two"), "https://b.example"),
+        );
+        let msg = diff(&e).findings.remove(0).message;
+        assert!(msg.contains("PreToolUse hook 'bash aaa"), "{msg}");
+        assert!(
+            msg.contains("PreToolUse http hook 'https://b.example'"),
+            "{msg}"
+        );
+
+        write(
+            &claude,
+            json!({"mcpServers": {"db": {"command": "db-mcp", "env": {"TOKEN": "two"}}}}),
+        );
+        let msg = diff(&e).findings.remove(0).message;
+        assert!(msg.starts_with("Changed since last session: MCP server 'db' (db-mcp env: TOKEN="));
+        assert!(!msg.contains("two"), "{msg}");
     }
 
     #[test]
