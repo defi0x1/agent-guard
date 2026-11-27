@@ -1,0 +1,38 @@
+[package]
+name = "agent-guard"
+version = "0.2.0"
+description = "A local security layer for AI coding agents: checks every tool call, keeps keys from leaking, shows what your agents send out."
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/defi0x1/mcp-firewall"
+readme = "README.md"
+keywords = ["security", "ai-agents", "claude-code", "mcp", "hooks"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "guard"
+path = "src/main.rs"
+
+[[bin]]
+name = "agent-guard"
+path = "src/bin/agent-guard.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
