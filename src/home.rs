@@ -20,13 +20,19 @@ pub fn dir() -> io::Result<PathBuf> {
 /// The directory, created with mode 0700 if missing (and tightened if it is looser).
 pub fn ensure() -> io::Result<PathBuf> {
     let d = dir()?;
-    fs::create_dir_all(&d)?;
-    let mut perm = fs::metadata(&d)?.permissions();
+    private_dir(&d)?;
+    Ok(d)
+}
+
+/// Creates `d` (and missing parents) and makes sure only the user can open it.
+pub fn private_dir(d: &Path) -> io::Result<()> {
+    fs::create_dir_all(d)?;
+    let mut perm = fs::metadata(d)?.permissions();
     if perm.mode() & 0o077 != 0 {
         perm.set_mode(0o700);
-        fs::set_permissions(&d, perm)?;
+        fs::set_permissions(d, perm)?;
     }
-    Ok(d)
+    Ok(())
 }
 
 /// Writes `data` to `path` atomically (temp file and rename), mode 0600.

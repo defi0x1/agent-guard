@@ -348,7 +348,7 @@ fn backup(settings: &Path, backups: &Path) -> anyhow::Result<Option<PathBuf>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    fs::create_dir_all(backups)?;
+    home::private_dir(backups)?;
     let dest = backups.join(format!("settings.{}.json", home::now()));
     if !dest.exists() {
         home::write_private(&dest, &data)

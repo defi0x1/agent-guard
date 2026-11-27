@@ -237,7 +237,7 @@ fn move_key(
     let (value, count) = rewrite(&mut config, server, var, &name)?;
 
     let backups = dir.join("backups");
-    fs::create_dir_all(&backups)?;
+    crate::home::private_dir(&backups)?;
     let base = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
