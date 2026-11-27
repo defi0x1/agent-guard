@@ -1,6 +1,7 @@
 //! `guard top` (live terminal view) and `guard statusline`.
 
 pub mod data;
+pub mod procs;
 
 use crate::{audit, home, pause};
 use data::Counts;
