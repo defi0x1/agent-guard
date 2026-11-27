@@ -249,34 +249,49 @@ impl Repo {
         )
     }
 
-    /// The repository's config entries: `config` (and a worktree's `config.worktree`), plus the
-    /// files they include, one level deep.
+    /// The repository's config entries: `config` (and a worktree's `config.worktree`), with the
+    /// files they include (`include.path`, `includeIf.*.path`, whatever the condition) read in
+    /// place, as deep as git follows them.
     fn config(&self) -> Vec<Entry> {
         let mut files = vec![self.common_dir.join("config")];
         if self.git_dir != self.common_dir {
             files.push(self.git_dir.join("config.worktree"));
         }
         let mut out = Vec::new();
+        let mut seen = Vec::new();
         for file in files {
-            let Ok(text) = fs::read_to_string(&file) else {
-                continue;
-            };
-            let entries = parse_config(&text);
-            let base = file.parent().unwrap_or(Path::new("/"));
-            for inc in entries.iter().filter(|e| {
-                matches!(e.section.as_str(), "include" | "includeif") && e.name == "path"
-            }) {
-                if let Some(text) = inc
-                    .value
-                    .as_deref()
-                    .and_then(|p| fs::read_to_string(resolve(base, p)).ok())
-                {
-                    out.extend(parse_config(&text));
-                }
-            }
-            out.extend(entries);
+            read_config(&file, 0, &mut seen, &mut out);
         }
         out
+    }
+}
+
+/// How deep git follows includes (`MAX_INCLUDE_DEPTH` in git's config.c).
+const MAX_INCLUDE_DEPTH: usize = 10;
+
+/// Appends the entries of config `file` to `out`, each included file right after the line that
+/// includes it. `seen` holds the files already read, so a cycle is read once.
+fn read_config(file: &Path, depth: usize, seen: &mut Vec<PathBuf>, out: &mut Vec<Entry>) {
+    let key = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    if depth > MAX_INCLUDE_DEPTH || seen.contains(&key) {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(file) else {
+        return;
+    };
+    seen.push(key);
+    let base = file.parent().unwrap_or(Path::new("/"));
+    for e in parse_config(&text) {
+        let include = matches!(e.section.as_str(), "include" | "includeif") && e.name == "path";
+        let path = e
+            .value
+            .as_deref()
+            .filter(|_| include)
+            .map(|p| resolve(base, p));
+        out.push(e);
+        if let Some(path) = path {
+            read_config(&path, depth + 1, seen, out);
+        }
     }
 }
 
@@ -1063,6 +1078,27 @@ mod tests {
         )
         .unwrap();
         append_config(&f, "[include]\n\tpath = ../evil.cfg\n");
+        let v = run(&ctx(&f, Config::default()), "git log");
+        assert_eq!(rules(&v), ["git.exec_config"]);
+        assert!(v.findings[0].message.contains("core.pager"));
+    }
+
+    #[test]
+    fn follows_nested_includes_without_looping() {
+        let f = fixture();
+        for i in 1..MAX_INCLUDE_DEPTH {
+            fs::write(
+                f.repo.join(format!("c{i}.cfg")),
+                format!("[include]\n\tpath = c{}.cfg\n", i + 1),
+            )
+            .unwrap();
+        }
+        fs::write(
+            f.repo.join(format!("c{MAX_INCLUDE_DEPTH}.cfg")),
+            "[core]\n\tpager = ./p\n[includeIf \"gitdir:/nowhere/\"]\n\tpath = c1.cfg\n",
+        )
+        .unwrap();
+        append_config(&f, "[include]\n\tpath = ../c1.cfg\n");
         let v = run(&ctx(&f, Config::default()), "git log");
         assert_eq!(rules(&v), ["git.exec_config"]);
         assert!(v.findings[0].message.contains("core.pager"));
