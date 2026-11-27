@@ -35,7 +35,15 @@ pub fn run(wrap: bool) -> anyhow::Result<()> {
         std::io::stdin().read_to_string(&mut input)?;
     }
     let state = state(&input)?;
-    println!("{}", render(&state, !no_color()));
+    let mut line = render(&state, !no_color());
+    // A project's settings can move the guard home with AGENT_GUARD_HOME; always show that.
+    if let Some(h) = crate::report::moved_home() {
+        line.push_str(&format!(
+            " · home {}",
+            crate::text::term_safe(&h.to_string_lossy())
+        ));
+    }
+    println!("{line}");
     if wrap && let Some(command) = wrapped_command(&home::dir()?) {
         run_wrapped(&command, &input)?;
     }
@@ -71,20 +79,19 @@ fn render(s: &State, color: bool) -> String {
             text.to_string()
         }
     };
+    let off = |why: &str| format!("agent guard: {} · {why}", paint("1;31", "Off"));
     match s {
-        State::NotInstalled => paint("1;31", "◆ guard OFF · not installed, run `guard install`"),
-        State::OffInProject => paint("1;31", "◆ guard OFF in this project (disableAllHooks)"),
-        State::Paused { until } => paint(
-            "1;33",
-            &format!(
-                "◆ guard PAUSED · {}m left",
-                until.saturating_sub(home::now()) / 60 + 1
-            ),
-        ),
+        State::NotInstalled => off("run `guard install`"),
+        State::OffInProject => off("this project sets disableAllHooks"),
+        State::Paused { until } if *until == pause::OFF => off("`guard on` turns it back on"),
+        State::Paused { until } => off(&format!(
+            "paused, {}m left",
+            until.saturating_sub(home::now()) / 60 + 1
+        )),
         State::On { counts, mode } => {
             let mut line = format!(
-                "{} {} {} {}",
-                paint("1;32", "◆ guard ON"),
+                "agent guard: {}  {} {} {}",
+                paint("1;32", "On"),
                 paint("31", &format!("● {}", counts.red)),
                 paint("33", &format!("● {}", counts.yellow)),
                 paint("32", &format!("● {}", counts.green)),
@@ -158,11 +165,14 @@ mod tests {
             },
             mode: Some("auto".into()),
         };
-        assert_eq!(render(&on, false), "◆ guard ON ● 1 ● 2 ● 41 · auto");
-        assert!(render(&State::NotInstalled, false).starts_with("◆ guard OFF"));
-        assert!(render(&State::OffInProject, false).contains("in this project"));
-        assert!(render(&State::Paused { until: 0 }, false).contains("PAUSED"));
-        assert!(render(&on, true).contains("\x1b[1;32m◆ guard ON\x1b[0m"));
+        assert_eq!(render(&on, false), "agent guard: On  ● 1 ● 2 ● 41 · auto");
+        assert!(render(&State::NotInstalled, false).starts_with("agent guard: Off"));
+        assert!(render(&State::OffInProject, false).contains("disableAllHooks"));
+        assert!(render(&State::Paused { until: 0 }, false).contains("paused"));
+        let off = State::Paused { until: pause::OFF };
+        assert!(render(&off, false).contains("guard on"));
+        assert!(render(&on, true).contains("\x1b[1;32mOn\x1b[0m"));
+        assert!(render(&off, true).contains("\x1b[1;31mOff\x1b[0m"));
     }
 
     #[test]

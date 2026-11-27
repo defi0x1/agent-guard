@@ -8,7 +8,6 @@ mod processes;
 pub mod procs;
 mod ui;
 
-use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
@@ -18,7 +17,6 @@ use crate::audit::Event;
 use crate::config::{self, Config, TrustedHost};
 use crate::{audit, home, pause};
 use app::{Action, App};
-use data::Counts;
 use procs::{Monitor, Resolver};
 
 const TAIL_EVERY: Duration = Duration::from_millis(500);
@@ -147,122 +145,9 @@ pub fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
-/// Prints one line for Claude Code's status line: the last 24 hours' red, yellow and green
-/// counts, and whether Agent Guard is paused. Reads only the end of the log.
-pub fn statusline() -> anyhow::Result<()> {
-    let now = home::now();
-    let counts = data::recent_counts(&audit::path()?, now.saturating_sub(data::DAY))?;
-    let paused = pause::active(now).is_some();
-    let off = std::io::stdin()
-        .is_terminal()
-        .then(String::new)
-        .or_else(|| std::io::read_to_string(std::io::stdin()).ok())
-        .is_some_and(|raw| hooks_disabled(&raw));
-    let home = crate::report::moved_home().map(|d| d.to_string_lossy().into_owned());
-    println!(
-        "{}",
-        status_text(counts, paused, off, home.as_deref(), !no_color())
-    );
-    Ok(())
-}
-
-/// Whether the project in Claude Code's status line input sets `disableAllHooks`, which turns
-/// every hook off, Agent Guard's included. A cloned repo can ship that setting.
-fn hooks_disabled(status_input: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(status_input) else {
-        return false;
-    };
-    let Some(dir) = v["workspace"]["current_dir"].as_str().or(v["cwd"].as_str()) else {
-        return false;
-    };
-    ["settings.json", "settings.local.json"].iter().any(|f| {
-        std::fs::read_to_string(std::path::Path::new(dir).join(".claude").join(f))
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|s| s["disableAllHooks"] == serde_json::Value::Bool(true))
-    })
-}
-
-/// The status line text, with ANSI colors when `color` is set. `home` is Agent Guard's directory
-/// when it is not the default one.
-fn status_text(c: Counts, paused: bool, off: bool, home: Option<&str>, color: bool) -> String {
-    if off {
-        let msg = "◆ guard OFF in this project (disableAllHooks)";
-        return if color {
-            format!("\x1b[1;31m{msg}\x1b[0m")
-        } else {
-            msg.to_string()
-        };
-    }
-    let dot = |code: &str| {
-        if color {
-            format!("\x1b[{code}m●\x1b[0m")
-        } else {
-            "●".to_string()
-        }
-    };
-    let mut s = format!(
-        "◆ guard {} {} {} {} {} {}",
-        dot("31"),
-        c.red,
-        dot("33"),
-        c.yellow,
-        dot("32"),
-        c.green
-    );
-    if paused {
-        s.push_str(" paused");
-    }
-    if let Some(h) = home {
-        s.push_str(&format!(" home {}", crate::text::term_safe(h)));
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn status_line_text() {
-        let c = Counts {
-            red: 1,
-            yellow: 2,
-            green: 30,
-        };
-        assert_eq!(
-            status_text(c, false, false, None, false),
-            "◆ guard ● 1 ● 2 ● 30"
-        );
-        assert_eq!(
-            status_text(c, true, false, None, false),
-            "◆ guard ● 1 ● 2 ● 30 paused"
-        );
-        let colored = status_text(c, false, false, None, true);
-        assert!(colored.contains("\x1b[31m●\x1b[0m 1"));
-        assert!(colored.contains("\x1b[33m●\x1b[0m 2"));
-        assert!(colored.contains("\x1b[32m●\x1b[0m 30"));
-        assert_eq!(
-            status_text(c, false, false, Some("/p/.g\x1b[8m"), false),
-            "◆ guard ● 1 ● 2 ● 30 home /p/.g\\x1b[8m"
-        );
-    }
-
-    #[test]
-    fn status_line_shows_disabled_hooks() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = serde_json::json!({ "workspace": { "current_dir": dir.path() } }).to_string();
-        assert!(!hooks_disabled(&input));
-        std::fs::create_dir(dir.path().join(".claude")).unwrap();
-        std::fs::write(
-            dir.path().join(".claude/settings.json"),
-            r#"{"disableAllHooks": true}"#,
-        )
-        .unwrap();
-        assert!(hooks_disabled(&input));
-        let c = Counts::default();
-        assert!(status_text(c, false, true, None, false).contains("OFF"));
-    }
 
     #[test]
     fn trust_and_block_do_not_duplicate() {
