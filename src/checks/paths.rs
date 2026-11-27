@@ -1369,12 +1369,21 @@ fn fallback(all: &str, creds: &str, user: &Path, guard_names: &[String], hits: &
         });
     let words: Vec<&str> = all
         .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+        .filter(|w| !w.is_empty())
         .collect();
+    // A control word counts only right after `guard`, past at most a few flags, so a command
+    // that merely names this repository (`agent-guard`) and says "off" elsewhere is not blocked.
     let control = words
         .iter()
-        .any(|w| matches!(*w, "guard" | "agent-guard"))
-        .then(|| words.iter().find(|w| GUARD_WORDS.contains(w)))
-        .flatten()
+        .enumerate()
+        .filter(|(_, w)| matches!(**w, "guard" | "agent-guard"))
+        .find_map(|(i, _)| {
+            words[i + 1..]
+                .iter()
+                .take(4)
+                .take_while(|w| w.starts_with('-') || GUARD_WORDS.contains(*w) || **w == "guard")
+                .find(|w| GUARD_WORDS.contains(*w))
+        })
         .map(|w| format!("guard {w}"));
     if let Some(what) = named.or(control) {
         hits.push(Hit::GuardMention(what));
@@ -1833,6 +1842,16 @@ mod tests {
             &e,
             "guard explain paths.credentials; guard top; guard scan; guard on",
         ));
+        // Naming the repository and saying "off" or "install" elsewhere is not guard control.
+        clean(&bash_v(&e, "git log --grep guard && echo off"));
+        clean(&bash_v(
+            &e,
+            "cd agent-guard && cargo install --path . && echo pause",
+        ));
+        // Indirect forms still count.
+        for cmd in ["GUARD=guard; $GUARD pause 1d", "$(which guard) --quiet off"] {
+            only(&bash_v(&e, cmd), "paths.guard_control", Level::HardBlock);
+        }
     }
 
     #[test]
