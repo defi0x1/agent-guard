@@ -16,3 +16,6 @@ pub fn prompt(_ctx: &Ctx, _text: &str, _v: &mut Verdict) {}
 pub fn redact(s: &str) -> String {
     s.to_string()
 }
+
+/// Rule ids this module emits, with a plain-words explanation each.
+pub const RULES: &[(&str, &str)] = &[];

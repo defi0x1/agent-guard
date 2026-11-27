@@ -10,3 +10,6 @@ pub fn pre(_ctx: &Ctx, _call: &ToolCall, _v: &mut Verdict) {}
 pub fn review(_config: &mut crate::config::Config) -> anyhow::Result<()> {
     anyhow::bail!("not implemented yet")
 }
+
+/// Rule ids this module emits, with a plain-words explanation each.
+pub const RULES: &[(&str, &str)] = &[];

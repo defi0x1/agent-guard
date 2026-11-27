@@ -100,8 +100,12 @@ enum TrustCmd {
     },
     /// Stop trusting a host.
     Rm { host: String },
-    /// List trusted hosts.
+    /// List trusted hosts, repositories and blocked hosts.
     List,
+    /// Trust a repository's git hooks and config (default: the current directory).
+    Repo { path: Option<std::path::PathBuf> },
+    /// Block a host: calls to it are red, and the net proxy refuses it.
+    Block { host: String },
     /// Review hosts seen recently and trust the ones you recognise.
     Review,
 }
@@ -202,6 +206,31 @@ fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
                 }
                 println!("{}  {}", t.host, extra.join(" "));
             }
+            for r in &c.trust.repos {
+                println!("repo {r}");
+            }
+            for b in &c.trust.blocked {
+                println!("blocked {b}");
+            }
+        }
+        TrustCmd::Repo { path } => {
+            let p = match path {
+                Some(p) => p,
+                None => std::env::current_dir()?,
+            };
+            let p = std::fs::canonicalize(&p)?.to_string_lossy().into_owned();
+            if !c.trust.repos.contains(&p) {
+                c.trust.repos.push(p.clone());
+            }
+            c.save()?;
+            println!("trusted repository {p}");
+        }
+        TrustCmd::Block { host } => {
+            if !c.trust.blocked.contains(&host) {
+                c.trust.blocked.push(host.clone());
+            }
+            c.save()?;
+            println!("blocked {host}");
         }
         TrustCmd::Review => crate::checks::net::review(&mut c)?,
     }

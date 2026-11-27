@@ -13,5 +13,6 @@ pub mod pause;
 pub mod proxy;
 pub mod report;
 pub mod scan;
+pub mod text;
 pub mod top;
 pub mod vault;

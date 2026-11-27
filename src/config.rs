@@ -47,6 +47,12 @@ pub struct RuleOverride {
 pub struct Trust {
     #[serde(default)]
     pub hosts: Vec<TrustedHost>,
+    /// Repositories (absolute paths) whose git hooks and config the user trusts.
+    #[serde(default)]
+    pub repos: Vec<String>,
+    /// Hosts the user blocked: calls to them are red, and `guard net-proxy` refuses them.
+    #[serde(default)]
+    pub blocked: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +118,16 @@ impl Config {
         self.rules
             .get(rule)
             .map_or_else(|| default(self.preset), |o| o.level)
+    }
+
+    /// Whether the user blocked `host`.
+    pub fn host_blocked(&self, host: &str) -> bool {
+        self.trust.blocked.iter().any(|b| host_matches(b, host))
+    }
+
+    /// Whether the repository at `path` (absolute) is trusted.
+    pub fn repo_trusted(&self, path: &Path) -> bool {
+        self.trust.repos.iter().any(|r| Path::new(r) == path)
     }
 
     /// Whether `host` is trusted for this agent and process at time `now`.
@@ -187,6 +203,7 @@ mod tests {
                         expires_at: Some(100),
                     },
                 ],
+                ..Trust::default()
             },
             ..Config::default()
         };

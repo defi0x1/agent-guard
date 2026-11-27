@@ -2,6 +2,7 @@
 //! turns the overall level into Claude Code's answer. Checks are pure where possible: they read
 //! the call and the context, and only touch the disk through the helpers they own.
 
+pub mod dest;
 pub mod git;
 pub mod net;
 pub mod paths;
@@ -100,6 +101,19 @@ pub fn prompt(ctx: &Ctx, text: &str) -> Verdict {
     let mut v = Verdict::default();
     secrets::prompt(ctx, text, &mut v);
     v
+}
+
+/// Every rule id with a plain-words explanation, for `guard explain` and `guard report`.
+pub fn all_rules() -> Vec<(&'static str, &'static str)> {
+    [
+        paths::RULES,
+        secrets::RULES,
+        sanitize::RULES,
+        git::RULES,
+        net::RULES,
+        session::RULES,
+    ]
+    .concat()
 }
 
 /// At session start: what changed in the agent's setup, and the current repository.
