@@ -9,6 +9,8 @@ pub enum Redirect {
     In,
     /// `>`, `>>`, `>|`, `&>`.
     Out,
+    /// `<>`: opens the file for reading and writing.
+    ReadWrite,
 }
 
 /// One simple command.
@@ -23,6 +25,8 @@ pub struct Command {
     pub stdin: bool,
     /// The bodies of its `<<` heredocs.
     pub heredocs: Vec<String>,
+    /// Its `<<<` here-strings.
+    pub herestrings: Vec<String>,
 }
 
 /// What the next word is, after a redirection operator.
@@ -68,7 +72,7 @@ impl Lexer {
                 let at = (text, self.out.len(), self.pipeline.len());
                 self.heredocs.push(at);
             }
-            Some(Target::HereString) => {}
+            Some(Target::HereString) => self.cmd.herestrings.push(text),
         }
     }
 
@@ -149,10 +153,38 @@ impl Lexer {
     }
 }
 
+/// Longest command text the checks read in full.
+pub const MAX_LEN: usize = 64 * 1024;
+
+/// Deepest nesting of command substitutions and parentheses that is parsed.
+pub const MAX_NESTING: usize = 32;
+
+/// Whether `text` is too long or too deeply nested to check in full.
+pub fn too_complex(text: &str) -> bool {
+    let mut depth = 0usize;
+    let mut deepest = 0;
+    for c in text.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    text.len() > MAX_LEN || deepest > MAX_NESTING
+}
+
 /// Splits `text` into pipelines of simple commands, on `;`, `&&`, `||`, `&`, `|`, newlines and
-/// parentheses. Command substitutions are also parsed, as pipelines after the others. Heredoc
-/// bodies are not commands: they are kept on the command that reads them.
+/// parentheses. Command substitutions are also parsed, as pipelines after the others, down to
+/// [`MAX_NESTING`] levels. Heredoc bodies are not commands: they are kept on the command that
+/// reads them.
 pub fn pipelines(text: &str) -> Vec<Vec<Command>> {
+    parse(text, 0)
+}
+
+fn parse(text: &str, depth: usize) -> Vec<Vec<Command>> {
     let s: Vec<char> = text.chars().collect();
     let at = |i: usize| s.get(i).copied();
     let mut lx = Lexer::default();
@@ -195,8 +227,12 @@ pub fn pipelines(text: &str) -> Vec<Vec<Command>> {
                     i += if after == Some('-') { 2 } else { 1 };
                     lx.redirect(Target::Heredoc);
                 }
+                (Some('>'), _) => {
+                    i += 1;
+                    lx.redirect(Target::File(Redirect::ReadWrite));
+                }
                 (after, _) => {
-                    if matches!(after, Some('&' | '>')) {
+                    if after == Some('&') {
                         i += 1;
                     }
                     lx.redirect(Target::File(Redirect::In));
@@ -258,8 +294,10 @@ pub fn pipelines(text: &str) -> Vec<Vec<Command>> {
         p.retain(|c| !c.args.is_empty());
     }
     out.retain(|p| !p.is_empty());
-    for sub in lx.subs {
-        out.extend(pipelines(&sub));
+    if depth < MAX_NESTING {
+        for sub in lx.subs {
+            out.extend(parse(&sub, depth + 1));
+        }
     }
     out
 }
@@ -312,8 +350,10 @@ pub fn command<S: AsRef<str>>(mut args: &[S]) -> &[S] {
                 if !flag.starts_with('-') {
                     break;
                 }
-                let takes_value =
-                    WRAPPER_VALUE_FLAGS.contains(&flag) || (wrapper == "nice" && flag == "-n");
+                // `command -p` takes no value; `exec -a name` and `nice -n 5` do.
+                let takes_value = (WRAPPER_VALUE_FLAGS.contains(&flag) && wrapper != "command")
+                    || (wrapper == "nice" && flag == "-n")
+                    || (wrapper == "exec" && flag == "-a");
                 args = if takes_value {
                     more.get(1..).unwrap_or(&[])
                 } else {
@@ -387,5 +427,30 @@ mod tests {
         ];
         assert_eq!(command(&w), ["rm", "x"]);
         assert!(is_assignment("_A1=x") && !is_assignment("1A=x") && !is_assignment("=x"));
+        assert_eq!(
+            command(&["exec", "-a", "x", "guard", "pause"]),
+            ["guard", "pause"]
+        );
+        assert_eq!(
+            command(&["command", "-p", "guard", "pause"]),
+            ["guard", "pause"]
+        );
+    }
+
+    #[test]
+    fn read_write_redirects_and_herestrings() {
+        let p = pipelines("echo 1 1<> f; xargs guard <<< 'pause 1d'; cat <&3");
+        assert_eq!(p[0][0].redirects, [(Redirect::ReadWrite, "f".to_string())]);
+        assert_eq!(p[1][0].herestrings, ["pause 1d"]);
+        assert!(p[2][0].redirects.is_empty());
+    }
+
+    #[test]
+    fn deep_nesting_is_bounded() {
+        let deep = format!("{}x{}", "$(".repeat(16000), ")".repeat(16000));
+        assert!(too_complex(&deep));
+        assert!(!pipelines(&deep).is_empty());
+        assert!(too_complex(&"a".repeat(MAX_LEN + 1)));
+        assert!(!too_complex("echo $(date) $(id -u)"));
     }
 }

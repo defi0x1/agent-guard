@@ -615,11 +615,14 @@ fn bash(cmd: &str, user: &Path, cwd: &Path, depth: u8, hits: &mut Vec<Hit>) {
     let mut cwd = cwd.to_path_buf();
     for c in shell::pipelines(cmd).into_iter().flatten() {
         for (r, target) in &c.redirects {
-            let op = match r {
-                Redirect::Out => Op::Write,
-                Redirect::In => Op::Read,
-            };
-            add(hits, op, target, user, &cwd);
+            match r {
+                Redirect::Out => add(hits, Op::Write, target, user, &cwd),
+                Redirect::In => add(hits, Op::Read, target, user, &cwd),
+                Redirect::ReadWrite => {
+                    add(hits, Op::Write, target, user, &cwd);
+                    add(hits, Op::Read, target, user, &cwd);
+                }
+            }
         }
         let words: Vec<&str> = c.args.iter().map(String::as_str).collect();
         let Some((first, args)) = shell::command(&words).split_first() else {
