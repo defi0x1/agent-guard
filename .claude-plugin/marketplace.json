@@ -1,0 +1,14 @@
+{
+  "name": "agent-guard",
+  "description": "Agent Guard, a local security layer for AI coding agents",
+  "owner": {
+    "name": "defi0x1"
+  },
+  "plugins": [
+    {
+      "name": "agent-guard",
+      "source": "./plugin",
+      "description": "Checks every tool call, keeps keys from leaking, shows what your agents send out. Needs the guard binary on PATH."
+    }
+  ]
+}
