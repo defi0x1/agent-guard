@@ -884,6 +884,7 @@ const GUARD_CONTROL: &[&str] = &[
     "resume",
     "level",
     "trust",
+    "whitelist",
     "uninstall",
     "install",
     "hook",
@@ -1234,6 +1235,7 @@ const GUARD_WORDS: &[&str] = &[
     "off",
     "resume",
     "trust",
+    "whitelist",
     "level",
     "install",
     "uninstall",
@@ -1371,12 +1373,23 @@ fn fallback(all: &str, creds: &str, user: &Path, guard_names: &[String], hits: &
         .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
         .filter(|w| !w.is_empty())
         .collect();
+    // A variable set to the guard binary (`G=target/release/guard; $G off`) counts as `guard`.
+    let aliases: Vec<&str> = all
+        .split(|c: char| c.is_whitespace() || ";&|()`".contains(c))
+        .filter_map(|t| t.split_once('='))
+        .filter(|(_, v)| {
+            let v = v.trim_matches(['"', '\'']);
+            matches!(v.rsplit('/').next(), Some("guard" | "agent-guard"))
+        })
+        .map(|(n, _)| n.trim_start_matches("export").trim())
+        .filter(|n| !n.is_empty())
+        .collect();
     // A control word counts only right after `guard`, past at most a few flags, so a command
     // that merely names this repository (`agent-guard`) and says "off" elsewhere is not blocked.
     let control = words
         .iter()
         .enumerate()
-        .filter(|(_, w)| matches!(**w, "guard" | "agent-guard"))
+        .filter(|(_, w)| matches!(**w, "guard" | "agent-guard") || aliases.contains(*w))
         .find_map(|(i, _)| {
             words[i + 1..]
                 .iter()
@@ -1849,7 +1862,13 @@ mod tests {
             "cd agent-guard && cargo install --path . && echo pause",
         ));
         // Indirect forms still count.
-        for cmd in ["GUARD=guard; $GUARD pause 1d", "$(which guard) --quiet off"] {
+        for cmd in [
+            "GUARD=guard; $GUARD pause 1d",
+            "$(which guard) --quiet off",
+            "G=target/release/guard && $G whitelist evil.example",
+            "G=target/release/guard && $G --help | grep -i white && $G whitelist evil.example",
+            "cd x && ./target/release/guard whitelist evil.example",
+        ] {
             only(&bash_v(&e, cmd), "paths.guard_control", Level::HardBlock);
         }
     }
