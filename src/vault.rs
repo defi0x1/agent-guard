@@ -234,7 +234,10 @@ fn move_key(
         fs::read_to_string(file).with_context(|| format!("could not read {}", file.display()))?;
     let mut config: Value = serde_json::from_str(&text)
         .with_context(|| format!("{} is not valid JSON", file.display()))?;
+    let mut original = config.clone();
     let (value, count) = rewrite(&mut config, server, var, &name)?;
+    // The backup keeps the file as it was, minus the key itself.
+    replace_strings(&mut original, &value, MOVED);
 
     let backups = dir.join("backups");
     crate::home::private_dir(&backups)?;
@@ -243,7 +246,9 @@ fn move_key(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "config".into());
     let backup = backups.join(format!("{base}.{now}"));
-    home::write_private(&backup, text.as_bytes())?;
+    let mut saved = serde_json::to_string_pretty(&original)?;
+    saved.push('\n');
+    home::write_private(&backup, saved.as_bytes())?;
 
     store.set(&name, &value)?;
     add_name(dir, &name)?;
@@ -259,6 +264,19 @@ fn move_key(
         file.display(),
         backup.display()
     ))
+}
+
+/// What a moved key reads as in the backup of its config.
+const MOVED: &str = "<moved to keychain>";
+
+/// Replaces every string in `v` equal to `from` with `to`.
+fn replace_strings(v: &mut Value, from: &str, to: &str) {
+    match v {
+        Value::String(s) if s == from => *s = to.to_string(),
+        Value::Array(a) => a.iter_mut().for_each(|x| replace_strings(x, from, to)),
+        Value::Object(m) => m.values_mut().for_each(|x| replace_strings(x, from, to)),
+        _ => {}
+    }
 }
 
 /// Rewrites every definition of `server` (top level and per project) that sets `var`, and returns
@@ -496,8 +514,14 @@ mod tests {
             "guard"
         );
 
-        let backup = dir.path().join("backups/.claude.json.42");
-        assert!(fs::read_to_string(backup).unwrap().contains(KEY));
+        let backup = fs::read_to_string(dir.path().join("backups/.claude.json.42")).unwrap();
+        assert!(!backup.contains(KEY));
+        let backup: Value = serde_json::from_str(&backup).unwrap();
+        assert_eq!(
+            backup["mcpServers"]["github"]["env"]["GITHUB_TOKEN"],
+            "<moved to keychain>"
+        );
+        assert_eq!(backup["mcpServers"]["github"]["env"]["OTHER"], "x");
         assert!(!msg.contains(KEY));
         assert!(msg.contains("https://github.com/settings/tokens"));
         assert_eq!(names(dir.path()).unwrap(), vec!["github.GITHUB_TOKEN"]);
