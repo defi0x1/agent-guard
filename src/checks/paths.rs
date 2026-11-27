@@ -472,19 +472,34 @@ fn is_credential(p: &Path, user: &Path) -> bool {
         })
 }
 
-/// Shell-style match with `*` and `?`.
+/// Shell-style match with `*` and `?`, in linear time: on a mismatch, go back to the last `*`
+/// and let it take one more character.
 fn wildcard(pattern: &str, name: &str) -> bool {
-    fn go(p: &[char], n: &[char]) -> bool {
-        match p.split_first() {
-            None => n.is_empty(),
-            Some(('*', rest)) => (0..=n.len()).any(|i| go(rest, &n[i..])),
-            Some(('?', rest)) => !n.is_empty() && go(rest, &n[1..]),
-            Some((c, rest)) => n.first() == Some(c) && go(rest, &n[1..]),
-        }
-    }
     let p: Vec<char> = pattern.chars().collect();
     let n: Vec<char> = name.chars().collect();
-    go(&p, &n)
+    let (mut i, mut j) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while j < n.len() {
+        match p.get(i) {
+            Some('*') => {
+                star = Some((i, j));
+                i += 1;
+            }
+            Some(&c) if c == '?' || c == n[j] => {
+                i += 1;
+                j += 1;
+            }
+            _ => match star {
+                Some((si, sj)) => {
+                    star = Some((si, sj + 1));
+                    i = si + 1;
+                    j = sj + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    p[i.min(p.len())..].iter().all(|&c| c == '*')
 }
 
 fn is_env(p: &Path) -> bool {
@@ -1212,5 +1227,16 @@ mod tests {
     #[test]
     fn wildcard_matches_names() {
         assert!(wildcard("id_*", "id_rsa") && !wildcard("*.pub", "id_rsa"));
+        assert!(wildcard("*", "") && wildcard("a*b?d", "aXXbcd") && !wildcard("a*b?d", "abd"));
+        assert!(wildcard("*cred*", "credentials") && !wildcard("?", ""));
+    }
+
+    #[test]
+    fn wildcard_is_linear() {
+        let start = std::time::Instant::now();
+        let pattern = format!("{}x", "*".repeat(40));
+        assert!(!wildcard(&pattern, &"a".repeat(200)));
+        assert!(wildcard(&pattern, &format!("{}x", "a".repeat(200))));
+        assert!(start.elapsed() < std::time::Duration::from_millis(10));
     }
 }
