@@ -5,7 +5,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -47,17 +47,35 @@ pub fn path() -> io::Result<PathBuf> {
     Ok(home::dir()?.join("audit.jsonl"))
 }
 
+/// The log is moved to `audit.jsonl.1` (replacing the older one) once it is larger than this.
+const MAX_LOG: u64 = 10 * 1024 * 1024;
+
 /// Appends one event. Concurrent hook processes append whole lines (O_APPEND, one write).
 pub fn append(e: &Event) -> io::Result<()> {
-    let dir = home::ensure()?;
+    let path = home::ensure()?.join("audit.jsonl");
+    rotate(&path, MAX_LOG)?;
     let mut line = serde_json::to_vec(e).map_err(io::Error::other)?;
     line.push(b'\n');
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(dir.join("audit.jsonl"))?;
+        .open(&path)?;
     f.write_all(&line)
+}
+
+/// Moves `path` to `<path>.1` if it is larger than `max` bytes.
+fn rotate(path: &Path, max: u64) -> io::Result<()> {
+    match fs::metadata(path) {
+        Ok(m) if m.len() > max => match fs::rename(path, path.with_extension("jsonl.1")) {
+            // Another process rotated it first.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            r => r,
+        },
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Every event in the log, oldest first. Unreadable lines are skipped.
@@ -88,6 +106,23 @@ pub fn clip(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_log_is_rotated_once() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("audit.jsonl");
+        rotate(&log, 10).unwrap();
+        fs::write(&log, "0123456789").unwrap();
+        rotate(&log, 10).unwrap();
+        assert!(log.exists(), "at the limit it stays");
+        fs::write(&log, "0123456789a").unwrap();
+        rotate(&log, 10).unwrap();
+        assert!(!log.exists());
+        assert_eq!(
+            fs::read_to_string(d.path().join("audit.jsonl.1")).unwrap(),
+            "0123456789a"
+        );
+    }
 
     #[test]
     fn clip_marks_the_cut() {
