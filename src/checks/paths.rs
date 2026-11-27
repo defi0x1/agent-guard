@@ -880,6 +880,7 @@ const SECRET_CLIS: &[(&str, &[&str])] = &[
 /// Agent Guard subcommands only the user may run.
 const GUARD_CONTROL: &[&str] = &[
     "pause",
+    "off",
     "resume",
     "level",
     "trust",
@@ -1230,6 +1231,7 @@ fn transfer_files<'a>(name: &str, args: &[&'a str]) -> Vec<(Op, &'a str)> {
 /// Control words that, next to `guard`, mean the agent is steering Agent Guard.
 const GUARD_WORDS: &[&str] = &[
     "pause",
+    "off",
     "resume",
     "trust",
     "level",
@@ -1829,7 +1831,7 @@ mod tests {
         }
         clean(&bash_v(
             &e,
-            "guard explain paths.credentials; guard top; guard scan",
+            "guard explain paths.credentials; guard top; guard scan; guard on",
         ));
     }
 
@@ -2076,6 +2078,10 @@ mod tests {
                 "cat ~//.agent-guard//config.toml",
                 "echo '{}' | guard hook",
                 "guard install",
+                "guard off",
+                "~/.local/bin/agent-guard off",
+                "python3 -c \"import os; os.system('guard off')\"",
+                "bash -c -- 'guard off'",
                 "g\\uard pause",
                 "\"guard\" pause",
                 "env -i guard pause",
