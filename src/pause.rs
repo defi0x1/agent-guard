@@ -8,6 +8,9 @@ use crate::home;
 
 const FILE: &str = "pause.until";
 
+/// The pause end time `guard off` writes: never, until `guard on`.
+pub const OFF: u64 = u64::MAX;
+
 /// Pauses checks until `until` (Unix seconds).
 pub fn pause_until(until: u64) -> io::Result<()> {
     let dir = home::ensure()?;

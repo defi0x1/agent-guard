@@ -80,6 +80,10 @@ enum Cmd {
     },
     /// End a pause early.
     Resume,
+    /// Turn Agent Guard back on.
+    On,
+    /// Turn Agent Guard off until `guard on` (run this yourself; agents are blocked from it).
+    Off,
     /// Show whether Agent Guard is on, the level, and today's counts.
     Status,
     /// Add Agent Guard to Claude Code (hooks and status line).
@@ -146,6 +150,18 @@ pub fn run() -> anyhow::Result<()> {
         Cmd::Resume => {
             pause::resume()?;
             println!("Agent Guard resumed.");
+            Ok(())
+        }
+        Cmd::On => {
+            pause::resume()?;
+            println!("Agent Guard is on.");
+            Ok(())
+        }
+        Cmd::Off => {
+            pause::pause_until(pause::OFF)?;
+            println!(
+                "Agent Guard is off: tool calls are not checked. `guard on` turns it back on."
+            );
             Ok(())
         }
         Cmd::Status => report::status(),
