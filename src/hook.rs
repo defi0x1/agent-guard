@@ -39,6 +39,9 @@ pub struct Input {
     pub prompt: Option<String>,
     #[serde(default)]
     pub mcp_server: Option<McpServer>,
+    /// Set by Claude Code when a subagent made the call.
+    #[serde(default)]
+    pub agent_type: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -301,6 +304,7 @@ fn log(ctx: &Ctx, input: &Input, call: Option<&ToolCall>, v: &Verdict, paused: b
         message: message(v),
         // The hook's parent is the agent process, which `guard top` shows the call under.
         pid: Some(std::os::unix::process::parent_id()),
+        agent_type: input.agent_type.clone(),
         ..Event::default()
     };
     // Logging must never break the agent; a failed write is reported on stderr only.

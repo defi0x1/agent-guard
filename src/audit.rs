@@ -32,6 +32,9 @@ pub struct Event {
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// The subagent type (`Explore`, `general-purpose`...) when a subagent made the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     pub level: Option<Level>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<String>,
