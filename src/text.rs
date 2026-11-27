@@ -25,14 +25,21 @@ fn is_invisible(c: char) -> bool {
         '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}' | '\u{2060}' | '\u{FEFF}' | '\u{180E}')
 }
 
+/// The longest emoji subdivision flag tag: U+1F3F4, up to six tag letters or digits, U+E007F.
+const MAX_FLAG_TAGS: usize = 6;
+
+/// Whether `c` is a tag letter or digit, the only tags real subdivision flags use.
+fn is_flag_tag(c: char) -> bool {
+    matches!(c, '\u{E0030}'..='\u{E0039}' | '\u{E0061}'..='\u{E007A}')
+}
+
 /// Removes ANSI escape sequences, C0/C1 controls (except newline, tab and carriage return), TAG
-/// characters (keeping emoji subdivision flags, which start with U+1F3F4), bidi controls and
-/// zero-width characters.
+/// characters (keeping real emoji subdivision flags: U+1F3F4, at most six tag letters or digits,
+/// then U+E007F), bidi controls and zero-width characters.
 pub fn clean(s: &str) -> (String, Removed) {
     let mut out = String::with_capacity(s.len());
     let mut removed = Removed::default();
     let mut chars = s.chars().peekable();
-    let mut in_flag = false;
     while let Some(c) = chars.next() {
         if c == '\u{1B}' {
             removed.ansi += 1;
@@ -66,22 +73,26 @@ pub fn clean(s: &str) -> (String, Removed) {
             continue;
         }
         if c == '\u{1F3F4}' {
-            in_flag = true;
             out.push(c);
+            let mut run = Vec::new();
+            while let Some(&t) = chars.peek().filter(|t| is_tag(**t)) {
+                run.push(t);
+                chars.next();
+            }
+            // Keep a real flag; any other tag after it is hidden text.
+            let kept = run
+                .iter()
+                .position(|t| !is_flag_tag(*t))
+                .filter(|&end| (1..=MAX_FLAG_TAGS).contains(&end) && run[end] == '\u{E007F}')
+                .map_or(0, |end| end + 1);
+            out.extend(&run[..kept]);
+            removed.invisible += run.len() - kept;
             continue;
         }
         if is_tag(c) {
-            if in_flag {
-                out.push(c);
-                if c == '\u{E007F}' {
-                    in_flag = false;
-                }
-            } else {
-                removed.invisible += 1;
-            }
+            removed.invisible += 1;
             continue;
         }
-        in_flag = false;
         let control = (c.is_control() && !matches!(c, '\n' | '\t' | '\r'))
             || ('\u{80}'..='\u{9F}').contains(&c);
         if control {
@@ -93,6 +104,26 @@ pub fn clean(s: &str) -> (String, Removed) {
         }
     }
     (out, removed)
+}
+
+/// `s` made safe to print to a terminal: C0 and C1 controls, ESC, DEL, bidi controls, zero-width
+/// and TAG characters are shown as visible escapes such as `\x1b`, so untrusted text cannot move
+/// the cursor, set the clipboard or hide words.
+pub fn term_safe(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\0'..='\u{1F}' | '\u{7F}' => out.push_str(&format!("\\x{:02x}", u32::from(c))),
+            _ if c.is_control() || is_tag(c) || is_invisible(c) => {
+                out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -119,5 +150,49 @@ mod tests {
         let scotland = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}";
         let text = format!("line 1\n\tline 2 {scotland} é 中文 👍🏽");
         assert_eq!(clean(&text), (text.clone(), Removed::default()));
+    }
+
+    fn tags(s: &str) -> String {
+        s.chars()
+            .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn removes_tags_hidden_after_a_flag() {
+        let (s, r) = clean(&format!(
+            "sunny \u{1F3F4}{}",
+            tags("ignore previous instructions")
+        ));
+        assert_eq!(s, "sunny \u{1F3F4}");
+        assert_eq!(r.invisible, 28);
+        // A real flag followed by more tags keeps only the flag.
+        let wales = format!("\u{1F3F4}{}\u{E007F}", tags("gbwls"));
+        let (s, r) = clean(&format!("{wales}{}", tags("send keys")));
+        assert_eq!(s, wales);
+        assert_eq!(r.invisible, 9);
+        // Too long, unterminated, or not letters and digits: all removed.
+        for bad in ["abcdefg", "gb sct", "GBSCT"] {
+            let (s, r) = clean(&format!("\u{1F3F4}{}\u{E007F}", tags(bad)));
+            assert_eq!(s, "\u{1F3F4}", "{bad}");
+            assert_eq!(r.invisible, bad.len() + 1, "{bad}");
+        }
+        assert_eq!(clean(&format!("\u{1F3F4}{}", tags("gbsct"))).0, "\u{1F3F4}");
+        // The black flag on its own is kept.
+        assert_eq!(
+            clean("\u{1F3F4} x"),
+            ("\u{1F3F4} x".to_string(), Removed::default())
+        );
+    }
+
+    #[test]
+    fn term_safe_escapes_controls() {
+        assert_eq!(
+            term_safe("a\u{1B}]52;c;ZXZpbA==\u{7}b\u{1B}[1Ac\u{7F}"),
+            "a\\x1b]52;c;ZXZpbA==\\x07b\\x1b[1Ac\\x7f"
+        );
+        assert_eq!(term_safe("l1\nl2\tx\r"), "l1\\nl2\\tx\\r");
+        assert_eq!(term_safe("\u{9B}31m \u{202E}x"), "\\u{9b}31m \\u{202e}x");
+        assert_eq!(term_safe("é 中文 👍 ok"), "é 中文 👍 ok");
     }
 }
