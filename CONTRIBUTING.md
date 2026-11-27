@@ -1,58 +1,22 @@
-# Contributing to mcp-firewall
+# Contributing
 
-Thanks for your interest! This is a young project and contributions are welcome.
+Issues and pull requests are welcome. For anything bigger than a small fix, open an issue first.
 
-## Development setup
+Before a pull request, run what CI runs:
 
-```bash
-git clone <your-fork>
-cd mcp-firewall
-pnpm install
-pnpm test        # run the suite
-pnpm typecheck   # type-check without emitting
-pnpm dev --help  # run the CLI from source (via tsx)
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-Node 20+ and pnpm are required.
+A new or changed check needs two tests: one for the risky call it catches, and one for a similar
+everyday call it must leave alone. False positives make people turn security tools off.
 
-## Project layout
+Rules live in `src/checks/`. Each rule has an id (`net.exfil_service`), a level per preset, and a
+one-sentence explanation in the module's `RULES` list, which `guard explain` prints.
 
-| Path | What |
-|---|---|
-| `src/proxy.ts` | The transparent MCP proxy (bridges two stdio transports) |
-| `src/interceptor.ts` | Audit + policy + detector orchestration |
-| `src/policy/` | YAML policy engine and matchers |
-| `src/detectors/` | Pure secret detectors + result scanning/redaction |
-| `src/approval/` | Local web-UI approval server |
-| `test-support/` | A mock MCP server used as a test fixture |
-| `docs/` | Architecture, design decisions, integration guide |
+Commit subjects are short and lowercase with a type prefix, for example
+`fix: ignore public keys under ~/.ssh`.
 
-Start with `docs/ARCHITECTURE.md`, then `docs/DESIGN.md` for the *why* behind
-key choices.
-
-## Conventions
-
-- **Detectors are pure functions** `(text) => Finding[]` — no I/O, no state. All
-  side effects live in the interceptor.
-- **Security-relevant code gets a test**, ideally written alongside it. Policy
-  matchers and detectors especially.
-- **Keep the dependency list small.** This is a security tool; every dependency
-  is attack surface. Justify new deps in the PR.
-- **The audit log must never contain raw secrets** (see DESIGN D9). If you touch
-  the record-writing path, preserve that invariant.
-- ESM throughout (`"type": "module"`) — use `import.meta.url`, not `__dirname`.
-
-## Adding a detector
-
-1. Write a pure `detectX(text: string): Finding[]` in `src/detectors/`.
-2. Wire it into `detectAll()` in `src/detectors/scan.ts`.
-3. Add unit tests covering true positives *and* false positives.
-
-That's it — the interceptor already runs `detectAll` on every result.
-
-## Submitting changes
-
-1. Branch from `main`.
-2. `pnpm typecheck && pnpm test` must pass.
-3. Open a PR describing the change and the reasoning. For a new dependency or a
-   change to the security model, explain the tradeoff.
+Found a way past a check? See [SECURITY.md](SECURITY.md) instead of opening an issue.
