@@ -8,7 +8,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -16,7 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::audit::clip;
 use crate::checks::{Ctx, PostResult, ToolCall, collect_strings, dest, paths, secrets};
 use crate::config::Preset;
-use crate::home;
+use crate::home::{self, read_json};
 use crate::level::{Finding, Level, Verdict};
 
 /// Rule ids this module emits, with a plain-words explanation each.
@@ -595,10 +594,6 @@ fn hash(s: &str) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
-}
-
-fn read_json<T: DeserializeOwned>(p: &Path) -> Option<T> {
-    serde_json::from_str(&fs::read_to_string(p).ok()?).ok()
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::config::{self, Config};
-use crate::home;
+use crate::home::{self, read_json};
 use crate::level::{Finding, Level};
 use crate::text;
 
@@ -301,10 +301,6 @@ impl<'a> Acc<'a> {
     }
 }
 
-fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
-}
-
 /// Every item under `roots`, most serious first.
 pub fn inventory(roots: &Roots, config: &Config) -> Vec<Item> {
     let mut items = Vec::new();
@@ -343,7 +339,7 @@ fn mcp_servers(roots: &Roots, config: &Config, items: &mut Vec<Item>) {
         }
     };
     let claude_json = roots.user_home.join(".claude.json");
-    if let Some(v) = read_json(&claude_json) {
+    if let Some(v) = read_json::<Value>(&claude_json) {
         if let Some(top) = v.get("mcpServers") {
             add(roots.show(&claude_json), top);
         }
@@ -356,10 +352,10 @@ fn mcp_servers(roots: &Roots, config: &Config, items: &mut Vec<Item>) {
         }
     }
     let project_mcp = roots.project.join(".mcp.json");
-    if let Some(v) = read_json(&project_mcp) {
+    if let Some(v) = read_json::<Value>(&project_mcp) {
         add(".mcp.json".to_string(), &v);
     }
-    if let Some(v) = read_json(&roots.desktop_config) {
+    if let Some(v) = read_json::<Value>(&roots.desktop_config) {
         add("Claude Desktop".to_string(), &v);
     }
 }
@@ -368,7 +364,7 @@ fn mcp_servers(roots: &Roots, config: &Config, items: &mut Vec<Item>) {
 fn installed_plugins(plugins_dir: &Path) -> Vec<(String, String, PathBuf)> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    if let Some(v) = read_json(&plugins_dir.join("installed_plugins.json")) {
+    if let Some(v) = read_json::<Value>(&plugins_dir.join("installed_plugins.json")) {
         for (key, entries) in v
             .get("plugins")
             .and_then(Value::as_object)
@@ -425,7 +421,7 @@ fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
 /// The source repository of each marketplace, from `known_marketplaces.json`.
 fn marketplace_sources(plugins_dir: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    if let Some(m) = read_json(&plugins_dir.join("known_marketplaces.json"))
+    if let Some(m) = read_json::<Value>(&plugins_dir.join("known_marketplaces.json"))
         .as_ref()
         .and_then(Value::as_object)
     {
@@ -667,7 +663,7 @@ fn settings_hooks(roots: &Roots, config: &Config, items: &mut Vec<Item>) {
         roots.project.join(".claude/settings.local.json"),
     ];
     for file in files {
-        let Some(hooks) = read_json(&file).and_then(|v| v.get("hooks").cloned()) else {
+        let Some(hooks) = read_json::<Value>(&file).and_then(|v| v.get("hooks").cloned()) else {
             continue;
         };
         let base = file
@@ -868,7 +864,8 @@ mod tests {
             &format!(r#"{{"name": "{name}", "version": "1.0.0"}}"#),
         );
         let installed = plugins.join("installed_plugins.json");
-        let mut v: Value = read_json(&installed).unwrap_or(serde_json::json!({"plugins": {}}));
+        let mut v: Value =
+            read_json::<Value>(&installed).unwrap_or(serde_json::json!({"plugins": {}}));
         v["plugins"][format!("{name}@{market}")] =
             serde_json::json!([{"installPath": root.to_string_lossy()}]);
         put(&installed, &v.to_string());
