@@ -1,6 +1,7 @@
 //! `guard top` (live terminal view) and `guard statusline`.
 
 mod app;
+mod calls;
 pub mod data;
 mod events;
 mod network;
@@ -47,11 +48,12 @@ fn event_loop(
     let mut last_procs: Option<Instant> = None;
     while !app.quit {
         if last_tail.is_none_or(|t| t.elapsed() >= TAIL_EVERY) {
+            app.now = home::now();
+            app.tick += 1;
             match tailer.poll() {
                 Ok(new) => app.push(new),
                 Err(e) => app.status = format!("Could not read the log: {e}"),
             }
-            app.now = home::now();
             app.paused_until = pause::active(app.now);
             for (host, ips) in resolver.poll() {
                 for ip in ips {

@@ -204,7 +204,8 @@ pub struct Filter {
     pub green: bool,
     pub yellow: bool,
     pub red: bool,
-    /// Case-insensitive text to find in the agent, session, tool, target, rules or message.
+    /// Case-insensitive text to find in the agent, subagent type, session, tool, target, rules or
+    /// message.
     pub text: String,
     /// Only this agent, if set.
     pub agent: Option<String>,
@@ -239,6 +240,7 @@ impl Filter {
         let needle = self.text.to_lowercase();
         [&e.agent, &e.session, &e.tool, &e.target, &e.message]
             .into_iter()
+            .chain(&e.agent_type)
             .chain(&e.rules)
             .any(|s| s.to_lowercase().contains(&needle))
     }
@@ -263,10 +265,10 @@ pub fn next_agent(current: Option<&str>, agents: &[String]) -> Option<String> {
 }
 
 /// Whether an event belongs in the Alerts tab: red until acknowledged, yellow for an hour.
-pub fn is_alert(e: &Event, acked: bool, now: u64) -> bool {
-    match bucket(e.level) {
+pub fn is_alert(level: Option<Level>, ts: u64, acked: bool, now: u64) -> bool {
+    match bucket(level) {
         Level::Red => !acked,
-        Level::Yellow => e.ts + HOUR >= now,
+        Level::Yellow => ts + HOUR >= now,
         _ => false,
     }
 }
@@ -612,11 +614,12 @@ mod tests {
     #[test]
     fn alerts_keep_red_until_acked() {
         let now = 10 * HOUR;
-        assert!(is_alert(&ev(0, Level::Red), false, now));
-        assert!(!is_alert(&ev(0, Level::Red), true, now));
-        assert!(is_alert(&ev(now - 60, Level::Yellow), false, now));
-        assert!(!is_alert(&ev(now - 2 * HOUR, Level::Yellow), false, now));
-        assert!(!is_alert(&ev(now, Level::Green), false, now));
+        let red = Some(Level::Red);
+        assert!(is_alert(red, 0, false, now));
+        assert!(!is_alert(red, 0, true, now));
+        assert!(is_alert(Some(Level::Yellow), now - 60, false, now));
+        assert!(!is_alert(Some(Level::Yellow), now - 2 * HOUR, false, now));
+        assert!(!is_alert(Some(Level::Green), now, false, now));
     }
 
     #[test]
