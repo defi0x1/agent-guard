@@ -5,6 +5,7 @@ pub mod checks;
 pub mod cli;
 pub mod config;
 pub mod doctor;
+pub mod hardened;
 pub mod home;
 pub mod hook;
 pub mod install;
