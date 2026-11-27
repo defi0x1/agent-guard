@@ -48,6 +48,11 @@ fn mode(call: &ToolCall) -> Option<Mode> {
     }
 }
 
+/// Whether results of this tool are rewritten (MCP and web) rather than only flagged.
+pub fn rewrites(call: &ToolCall) -> bool {
+    mode(call) == Some(Mode::Clean)
+}
+
 /// Cleans MCP and web results, and flags hidden text and likely prompt injection. Object keys
 /// are cleaned and scanned like values.
 pub fn post(ctx: &Ctx, call: &ToolCall, response: &Value, r: &mut PostResult) {
