@@ -8,6 +8,7 @@ mod processes;
 pub mod procs;
 mod ui;
 
+use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
@@ -154,12 +155,42 @@ pub fn statusline() -> anyhow::Result<()> {
     let now = home::now();
     let counts = data::recent_counts(&audit::path()?, now.saturating_sub(data::DAY))?;
     let paused = pause::active(now).is_some();
-    println!("{}", status_text(counts, paused, !no_color()));
+    let off = std::io::stdin()
+        .is_terminal()
+        .then(String::new)
+        .or_else(|| std::io::read_to_string(std::io::stdin()).ok())
+        .is_some_and(|raw| hooks_disabled(&raw));
+    println!("{}", status_text(counts, paused, off, !no_color()));
     Ok(())
 }
 
+/// Whether the project in Claude Code's status line input sets `disableAllHooks`, which turns
+/// every hook off, Agent Guard's included. A cloned repo can ship that setting.
+fn hooks_disabled(status_input: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(status_input) else {
+        return false;
+    };
+    let Some(dir) = v["workspace"]["current_dir"].as_str().or(v["cwd"].as_str()) else {
+        return false;
+    };
+    ["settings.json", "settings.local.json"].iter().any(|f| {
+        std::fs::read_to_string(std::path::Path::new(dir).join(".claude").join(f))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .is_some_and(|s| s["disableAllHooks"] == serde_json::Value::Bool(true))
+    })
+}
+
 /// The status line text, with ANSI colors when `color` is set.
-fn status_text(c: Counts, paused: bool, color: bool) -> String {
+fn status_text(c: Counts, paused: bool, off: bool, color: bool) -> String {
+    if off {
+        let msg = "◆ guard OFF in this project (disableAllHooks)";
+        return if color {
+            format!("\x1b[1;31m{msg}\x1b[0m")
+        } else {
+            msg.to_string()
+        };
+    }
     let dot = |code: &str| {
         if color {
             format!("\x1b[{code}m●\x1b[0m")
@@ -193,12 +224,31 @@ mod tests {
             yellow: 2,
             green: 30,
         };
-        assert_eq!(status_text(c, false, false), "◆ guard ● 1 ● 2 ● 30");
-        assert_eq!(status_text(c, true, false), "◆ guard ● 1 ● 2 ● 30 paused");
-        let colored = status_text(c, false, true);
+        assert_eq!(status_text(c, false, false, false), "◆ guard ● 1 ● 2 ● 30");
+        assert_eq!(
+            status_text(c, true, false, false),
+            "◆ guard ● 1 ● 2 ● 30 paused"
+        );
+        let colored = status_text(c, false, false, true);
         assert!(colored.contains("\x1b[31m●\x1b[0m 1"));
         assert!(colored.contains("\x1b[33m●\x1b[0m 2"));
         assert!(colored.contains("\x1b[32m●\x1b[0m 30"));
+    }
+
+    #[test]
+    fn status_line_shows_disabled_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = serde_json::json!({ "workspace": { "current_dir": dir.path() } }).to_string();
+        assert!(!hooks_disabled(&input));
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.json"),
+            r#"{"disableAllHooks": true}"#,
+        )
+        .unwrap();
+        assert!(hooks_disabled(&input));
+        let c = Counts::default();
+        assert!(status_text(c, false, true, false).contains("OFF"));
     }
 
     #[test]
