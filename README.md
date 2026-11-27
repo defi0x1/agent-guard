@@ -52,7 +52,6 @@ guard trust review                          # trust or block the hosts seen rece
 guard level relaxed                         # or recommended (default), strict
 guard explain secrets.outbound              # what a rule means, how to change it
 guard off / guard on                        # you can run them; the agent can't
-guard pause 15m                             # off for a while, then back on
 guard scan                                  # rate every plugin, skill, MCP server and hook
 guard secret move github GITHUB_TOKEN       # move a key from MCP config to the keychain
 guard report                                # what was flagged in the last 24 hours
@@ -66,7 +65,7 @@ The normal install lives in your user settings, so anything running as you could
 `sudo guard install --hardened` puts the hooks, the sandbox and deny rules for your keys into
 Claude Code's managed settings, which root owns. Claude can then no longer turn the guard off,
 read `~/.ssh` or `~/.aws`, or reach hosts you haven't trusted. Changing trust or levels, or
-pausing, then needs `sudo`. The status line says `hardened`, and shows `sandbox OFF` in red if
+turning it off, then needs `sudo`. The status line says `hardened`, and shows `sandbox OFF` in red if
 the sandbox was turned off. `sudo guard uninstall --hardened` undoes it.
 
 Tools that need SSH keys or cloud credentials (git over SSH, the aws CLI) stop working in

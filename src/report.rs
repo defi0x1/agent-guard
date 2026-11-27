@@ -40,8 +40,11 @@ pub fn status() -> anyhow::Result<()> {
     let loaded = config::load();
     let path = config::path()?;
     match pause::active(now) {
+        Some(until) if until == pause::OFF => {
+            println!("Agent Guard is off. `guard on` turns it back on.")
+        }
         Some(until) => println!(
-            "Agent Guard is paused until {} ({} min left). `guard resume` turns it back on.",
+            "Agent Guard is paused until {} ({} min left). `guard on` turns it back on.",
             fmt_time(until),
             until.saturating_sub(now).div_ceil(60)
         ),

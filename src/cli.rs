@@ -73,13 +73,6 @@ enum Cmd {
     Explain { rule: String },
     /// Set the default strictness.
     Level { preset: Preset },
-    /// Pause checks (run this yourself, in a terminal; agents are blocked from it).
-    Pause {
-        #[arg(default_value = "15m")]
-        duration: String,
-    },
-    /// End a pause early.
-    Resume,
     /// Turn Agent Guard back on.
     On,
     /// Turn Agent Guard off until `guard on` (run this yourself; agents are blocked from it).
@@ -150,18 +143,6 @@ pub fn run() -> anyhow::Result<()> {
             c.preset = preset;
             c.save()?;
             println!("level set to {preset:?}");
-            Ok(())
-        }
-        Cmd::Pause { duration } => {
-            let secs = pause::parse_duration(&duration)
-                .ok_or_else(|| anyhow::anyhow!("bad duration {duration:?}; try 15m or 1h"))?;
-            pause::pause_until(home::now() + secs)?;
-            println!("Agent Guard paused for {duration}. `guard resume` ends it early.");
-            Ok(())
-        }
-        Cmd::Resume => {
-            pause::resume()?;
-            println!("Agent Guard resumed.");
             Ok(())
         }
         Cmd::On => {

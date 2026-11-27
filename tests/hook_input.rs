@@ -138,7 +138,7 @@ fn huge_results_are_checked_in_part_and_quickly() {
 }
 
 #[test]
-fn a_pause_never_rewrites_results() {
+fn off_never_rewrites_results() {
     let dir = tempfile::tempdir().unwrap();
     let input = json!({
         "hook_event_name": "PostToolUse",
@@ -152,11 +152,7 @@ fn a_pause_never_rewrites_results() {
     let a = hook(dir.path(), input.as_bytes()).unwrap();
     assert_eq!(a["hookSpecificOutput"]["updatedToolOutput"]["result"], "ab");
 
-    assert!(
-        guard(dir.path(), &["pause", "1h"], None, b"")
-            .status
-            .success()
-    );
+    assert!(guard(dir.path(), &["off"], None, b"").status.success());
     assert_eq!(hook(dir.path(), input.as_bytes()), None);
 }
 
