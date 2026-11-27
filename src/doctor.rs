@@ -122,11 +122,22 @@ fn output(program: &str, args: &[&str]) -> Option<String> {
 }
 
 /// Runs git in the project, with `env.home` as the home for `--global`. Stdout on success.
+/// The project may be hostile, so git ignores the system config, embedded bare repositories,
+/// fsmonitor and hooks, any of which could run a command.
 fn git(env: &Env, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
+        .args([
+            "-c",
+            "safe.bareRepository=explicit",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(args)
         .current_dir(&env.cwd)
         .env("HOME", &env.home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("XDG_CONFIG_HOME")
         .output()
         .ok()?;
@@ -425,5 +436,25 @@ mod tests {
                 .unwrap()
                 .contains("\"enableAllProjectMcpServers\": true")
         );
+    }
+
+    #[test]
+    fn git_ignores_an_embedded_bare_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut env = env(tmp.path());
+        let evil = env.cwd.join("evil");
+        fs::create_dir_all(evil.join("objects")).unwrap();
+        fs::create_dir_all(evil.join("refs")).unwrap();
+        fs::write(evil.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(
+            evil.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ..\n\
+             \tfsmonitor = \"touch MARKER; false\"\n",
+        )
+        .unwrap();
+        env.cwd = evil;
+        let _ = git(&env, &["ls-files", "-z"]);
+        assert!(!env.cwd.join("../MARKER").exists());
+        assert!(!env.cwd.join("MARKER").exists());
     }
 }
