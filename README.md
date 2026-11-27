@@ -47,7 +47,8 @@ them, flags git repos whose config runs commands, and can pin MCP tool descripti
 
 ```sh
 guard top                                   # live view of agents, tool calls and connections
-guard trust add api.mycompany.dev --ttl 7d  # make a host green
+guard whitelist api.mycompany.dev           # a domain you know is safe stops warning
+guard whitelist                             # show the whitelist (--remove <domain> to drop one)
 guard trust review                          # trust or block the hosts seen recently
 guard level relaxed                         # or recommended (default), strict
 guard explain secrets.outbound              # what a rule means, how to change it

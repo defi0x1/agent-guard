@@ -29,7 +29,7 @@ pub const RULES: &[(&str, &str)] = &[
     ),
     (
         "net.upload_unknown",
-        "The agent is sending data to a host you have not trusted. If you know it, run: guard trust add <host>.",
+        "The agent is sending data to a host you have not trusted. If you know it, run: guard whitelist <host>.",
     ),
     (
         "net.exfil_service",
@@ -37,7 +37,7 @@ pub const RULES: &[(&str, &str)] = &[
     ),
     (
         "net.pipe_to_shell",
-        "The agent downloads a script and runs it without showing it first. Trust the source with: guard trust add <host>.",
+        "The agent downloads a script and runs it without showing it first. Whitelist the source with: guard whitelist <host>.",
     ),
     (
         "net.pipe_to_shell_untrusted",
@@ -45,7 +45,7 @@ pub const RULES: &[(&str, &str)] = &[
     ),
     (
         "net.raw_ip",
-        "The agent connects to a public IP address instead of a named host, which hides who it talks to. Trust it with: guard trust add <ip>.",
+        "The agent connects to a public IP address instead of a named host, which hides who it talks to. Whitelist it with: guard whitelist <ip>.",
     ),
     (
         "net.dev_tcp",
@@ -214,7 +214,10 @@ impl Checker<'_, '_> {
             self.push(
                 "net.raw_ip",
                 |_| Level::Yellow,
-                format!("This connects to a raw IP address ({h}) instead of a named host."),
+                format!(
+                    "This connects to a raw IP address ({h}) instead of a named host.{}",
+                    safe_hint(h)
+                ),
             );
         }
     }
@@ -231,7 +234,7 @@ impl Checker<'_, '_> {
             self.push(
                 "net.exfil_service",
                 |_| Level::Red,
-                format!("This sends data in the URL to {h}, a paste, webhook or tunnel service often used to steal data."),
+                format!("This sends data in the URL to {h}, a paste, webhook or tunnel service often used to steal data.{}", safe_hint(&h)),
             );
         }
     }
@@ -253,12 +256,13 @@ impl Checker<'_, '_> {
             self.push(
                 "net.exfil_service",
                 |_| Level::Red,
-                format!("This uploads data to {h}, a paste, webhook or tunnel service often used to steal data."),
+                format!("This uploads data to {h}, a paste, webhook or tunnel service often used to steal data.{}", safe_hint(h)),
             );
         } else {
             let msg = match untrusted.first() {
                 Some(h) => format!(
-                    "This uploads data to {h}, a host you have not trusted. If you know it: guard trust add {h}."
+                    "This uploads data to {h}, a host you have not trusted.{}",
+                    safe_hint(h)
                 ),
                 None => "This uploads data to a host that is not named in the command.".to_string(),
             };
@@ -292,13 +296,14 @@ impl Checker<'_, '_> {
             self.push(
                 "net.pipe_to_shell_untrusted",
                 |_| Level::Red,
-                format!("This downloads a script from {h}, a raw IP or paste service, and runs it at once."),
+                format!("This downloads a script from {h}, a raw IP or paste service, and runs it at once.{}", safe_hint(h)),
             );
             return;
         }
-        let from = untrusted
-            .first()
-            .map_or("an unnamed source".to_string(), |h| h.to_string());
+        let (from, hint) = untrusted.first().map_or_else(
+            || ("an unnamed source".to_string(), String::new()),
+            |h| (h.to_string(), safe_hint(h)),
+        );
         self.push(
             "net.pipe_to_shell",
             |p| match p {
@@ -306,7 +311,7 @@ impl Checker<'_, '_> {
                 _ => Level::Yellow,
             },
             format!(
-                "This downloads a script from {from} and runs it without showing it to you first."
+                "This downloads a script from {from} and runs it without showing it to you first.{hint}"
             ),
         );
     }
@@ -357,9 +362,18 @@ impl Checker<'_, '_> {
             {
                 continue;
             }
-            self.push("net.risky_install", |_| Level::Yellow, msg.text);
+            let text = match msg.host.as_deref() {
+                Some(h) => format!("{}{}", msg.text, safe_hint(h)),
+                None => msg.text,
+            };
+            self.push("net.risky_install", |_| Level::Yellow, text);
         }
     }
+}
+
+/// How to whitelist `host` once the user knows it is safe.
+fn safe_hint(host: &str) -> String {
+    format!(" If you know {host} is safe, run: guard whitelist {host}")
 }
 
 fn add_all(out: &mut Vec<String>, hosts: Vec<String>) {
@@ -1209,7 +1223,7 @@ mod tests {
         assert!(
             v.findings[0]
                 .message
-                .contains("guard trust add api.example.io")
+                .contains("guard whitelist api.example.io")
         );
     }
 

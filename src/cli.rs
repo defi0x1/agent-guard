@@ -50,7 +50,7 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:8899")]
         listen: String,
     },
-    /// Trusted hosts (calls to them are green).
+    /// Trusted hosts and repositories, blocked hosts, and a review of hosts seen recently.
     #[command(subcommand)]
     Trust(TrustCmd),
     /// Keys kept in the OS keychain instead of config files.
@@ -73,6 +73,16 @@ enum Cmd {
     Explain { rule: String },
     /// Set the default strictness.
     Level { preset: Preset },
+    /// Whitelist a domain you know is safe, so it stops warning. No domain: show the whitelist.
+    Whitelist {
+        domain: Option<String>,
+        /// Take the domain off the whitelist.
+        #[arg(long)]
+        remove: bool,
+        /// How long, for example `1h` or `7d`. Forever if not set.
+        #[arg(long)]
+        ttl: Option<String>,
+    },
     /// Turn Agent Guard back on.
     On,
     /// Turn Agent Guard off until `guard on` (run this yourself; agents are blocked from it).
@@ -144,6 +154,23 @@ pub fn run() -> anyhow::Result<()> {
             c.save()?;
             println!("level set to {preset:?}");
             Ok(())
+        }
+        Cmd::Whitelist {
+            domain,
+            remove,
+            ttl,
+        } => {
+            require_root_if_hardened("whitelist")?;
+            trust(match (domain, remove) {
+                (None, _) => TrustCmd::List,
+                (Some(host), true) => TrustCmd::Rm { host },
+                (Some(host), false) => TrustCmd::Add {
+                    host,
+                    agent: None,
+                    process: None,
+                    ttl,
+                },
+            })
         }
         Cmd::On => {
             pause::resume()?;

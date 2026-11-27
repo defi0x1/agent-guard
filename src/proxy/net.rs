@@ -31,7 +31,7 @@ pub const RULES: &[(&str, &str)] = &[
     ),
     (
         NEW_HOST,
-        "An agent connected through the net proxy to a host it never used before; if you expect it, allow it with \"guard trust add <host>\".",
+        "An agent connected through the net proxy to a host it never used before; if you expect it, allow it with \"guard whitelist <host>\".",
     ),
 ];
 
