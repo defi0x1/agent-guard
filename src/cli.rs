@@ -87,9 +87,17 @@ enum Cmd {
     /// Show whether Agent Guard is on, the level, and today's counts.
     Status,
     /// Add Agent Guard to Claude Code (hooks and status line).
-    Install,
+    Install {
+        /// Lock the hooks and the sandbox in root-owned managed settings (run with sudo).
+        #[arg(long)]
+        hardened: bool,
+    },
     /// Remove Agent Guard from Claude Code.
-    Uninstall,
+    Uninstall {
+        /// Remove hardened mode (run with sudo).
+        #[arg(long)]
+        hardened: bool,
+    },
     /// Check that the hooks really block, ask and clean on this Claude Code version.
     Selftest,
 }
@@ -128,12 +136,16 @@ pub fn run() -> anyhow::Result<()> {
         Cmd::Scan => scan::run(),
         Cmd::Proxy { command } => proxy::run(&command),
         Cmd::NetProxy { listen } => proxy::net::run(&listen),
-        Cmd::Trust(t) => trust(t),
+        Cmd::Trust(t) => {
+            require_root_if_hardened("trust")?;
+            trust(t)
+        }
         Cmd::Secret(s) => vault::run(s),
         Cmd::Run { secrets, command } => vault::exec(&secrets, &command),
         Cmd::Report { since } => report::run(&since),
         Cmd::Explain { rule } => report::explain(&rule),
         Cmd::Level { preset } => {
+            require_root_if_hardened("level")?;
             let mut c = config::load().config;
             c.preset = preset;
             c.save()?;
@@ -165,10 +177,18 @@ pub fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Status => report::status(),
-        Cmd::Install => install::install(),
-        Cmd::Uninstall => install::uninstall(),
+        Cmd::Install { hardened: true } => install::install_hardened(),
+        Cmd::Install { hardened: false } => install::install(),
+        Cmd::Uninstall { hardened: true } => install::uninstall_hardened(),
+        Cmd::Uninstall { hardened: false } => install::uninstall(),
         Cmd::Selftest => install::selftest(),
     }
+}
+
+/// In hardened mode, policy changes need root so an agent running as the user cannot make them.
+fn require_root_if_hardened(what: &str) -> anyhow::Result<()> {
+    let hp = crate::hardened::Paths::system();
+    crate::hardened::require_root(&hp, what, crate::hardened::is_root())
 }
 
 fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
@@ -254,6 +274,12 @@ fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
             println!("blocked {}", term_safe(&host));
         }
         TrustCmd::Review => crate::checks::net::review(&mut c)?,
+    }
+    // Hardened mode keeps the sandbox allowlist in root-owned files; keep it in step.
+    let hp = crate::hardened::Paths::system();
+    if crate::hardened::installed(&hp) {
+        let c = config::load().config;
+        crate::hardened::set_trusted_hosts(&hp, &crate::hardened::trusted_from_config(&c))?;
     }
     Ok(())
 }
