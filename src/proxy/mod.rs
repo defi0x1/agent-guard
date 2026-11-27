@@ -169,7 +169,7 @@ fn serve(command: &[String]) -> anyhow::Result<i32> {
             for e in &events {
                 let _ = audit::append(e);
                 if e.level.is_some_and(|l| l >= Level::Yellow) {
-                    eprintln!("agent-guard: {}", e.message);
+                    eprintln!("agent-guard: {}", text::term_safe(&e.message));
                 }
             }
             write_line(&mut *lock(&out), &bytes)

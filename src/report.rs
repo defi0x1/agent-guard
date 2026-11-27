@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail};
 use crate::audit::{self, Event};
 use crate::config::{self, Config};
 use crate::level::Level;
+use crate::text::term_safe;
 use crate::{checks, home, install, pause};
 
 /// How many rules, tools and warnings the report lists.
@@ -48,11 +49,14 @@ pub fn status() -> anyhow::Result<()> {
     }
     println!("Level: {}", preset_name(&loaded.config));
     match &loaded.error {
-        Some(e) => println!("Config: could not be read, so defaults apply. {e}"),
-        None if path.exists() => println!("Config: {} (ok)", path.display()),
+        Some(e) => println!(
+            "Config: could not be read, so defaults apply. {}",
+            term_safe(e)
+        ),
+        None if path.exists() => println!("Config: {} (ok)", term_safe(&path.to_string_lossy())),
         None => println!(
             "Config: {} (not created yet, defaults apply)",
-            path.display()
+            term_safe(&path.to_string_lossy())
         ),
     }
     println!("Hooks: {}", install::installed().describe());
@@ -109,12 +113,20 @@ fn summary(events: &[Event], from: u64, label: &str) -> String {
         .flat_map(|e| e.rules.iter().map(String::as_str)));
     if !rules.is_empty() {
         lines.push("Top rules:".into());
-        lines.extend(rules.iter().map(|(r, n)| format!("  {n:>5}  {r}")));
+        lines.extend(
+            rules
+                .iter()
+                .map(|(r, n)| format!("  {n:>5}  {}", term_safe(r))),
+        );
     }
     let tools = top(recent.iter().map(|e| e.tool.as_str()));
     if !tools.is_empty() {
         lines.push("Top tools:".into());
-        lines.extend(tools.iter().map(|(t, n)| format!("  {n:>5}  {t}")));
+        lines.extend(
+            tools
+                .iter()
+                .map(|(t, n)| format!("  {n:>5}  {}", term_safe(t))),
+        );
     }
     let alerts: Vec<&&Event> = recent
         .iter()
@@ -127,15 +139,15 @@ fn summary(events: &[Event], from: u64, label: &str) -> String {
                 "  {}  {}  {}  {}",
                 fmt_time(e.ts),
                 e.level.unwrap_or(Level::Green),
-                if e.tool.is_empty() {
+                term_safe(if e.tool.is_empty() {
                     &e.source
                 } else {
                     &e.tool
-                },
-                audit::clip(&e.target, 60)
+                }),
+                term_safe(&audit::clip(&e.target, 60))
             ));
             if !e.message.is_empty() {
-                lines.push(format!("      {}", e.message));
+                lines.push(format!("      {}", term_safe(&e.message)));
             }
         }
         lines.push("`guard explain <rule>` says what a rule means.".into());
@@ -195,7 +207,7 @@ fn explain_text(
         }
         lines.push(format!(
             "  To change its level, add this to {}:",
-            config_path.display()
+            term_safe(&config_path.to_string_lossy())
         ));
         lines.push("    [rules]".into());
         lines.push(format!("    \"{id}\" = {{ level = \"yellow\" }}"));
@@ -297,6 +309,23 @@ mod tests {
         assert!(!out.contains("too old"));
         let newest = out.find("key out").unwrap();
         assert!(newest < out.find("warning 6").unwrap());
+    }
+
+    #[test]
+    fn report_escapes_terminal_codes() {
+        let mut e = ev(
+            100,
+            Level::Red,
+            "Bash\u{1B}[2J",
+            &["r\u{7}"],
+            "m\u{1B}]52;c;eA==\u{7}",
+        );
+        e.target = "t\u{9B}1A\nfake line".into();
+        let out = summary(&[e], 0, "24h");
+        assert!(!out.contains(['\u{1B}', '\u{7}', '\u{9B}']), "{out:?}");
+        assert!(out.contains("Bash\\x1b[2J"));
+        assert!(out.contains("t\\u{9b}1A\\nfake line"));
+        assert!(out.contains("m\\x1b]52;c;eA==\\x07"));
     }
 
     #[test]

@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::audit::Event;
 use crate::config::Config;
+use crate::text::term_safe;
 use crate::top::data::{self, Filter, HostRow, LiveConn};
 use crate::top::procs::Snapshot;
 
@@ -78,6 +79,24 @@ pub struct App {
     pub quit: bool,
 }
 
+/// `e` with every text field passed through [`term_safe`].
+fn safe(mut e: Event) -> Event {
+    for s in [
+        &mut e.agent,
+        &mut e.session,
+        &mut e.source,
+        &mut e.tool,
+        &mut e.target,
+        &mut e.message,
+    ] {
+        *s = term_safe(s);
+    }
+    for r in &mut e.rules {
+        *r = term_safe(r);
+    }
+    e
+}
+
 impl App {
     pub fn new(events: Vec<Event>, now: u64, color: bool, offset: i64) -> Self {
         let mut app = App {
@@ -104,9 +123,10 @@ impl App {
         app
     }
 
-    /// Adds new events, dropping the oldest beyond the limit.
+    /// Adds new events, dropping the oldest beyond the limit. Their text comes from agents and
+    /// servers, so control characters are escaped before anything draws it.
     pub fn push(&mut self, new: Vec<Event>) {
-        self.events.extend(new);
+        self.events.extend(new.into_iter().map(safe));
         if self.events.len() > MAX_EVENTS {
             let n = self.events.len() - MAX_EVENTS;
             self.events.drain(..n);
@@ -287,7 +307,7 @@ impl App {
                 if let Some(r) = rows.get(self.selected(rows.len())) {
                     self.mode = Mode::ConfirmKill {
                         pid: r.proc.pid,
-                        name: r.proc.name.clone(),
+                        name: term_safe(&r.proc.name),
                     };
                 }
             }
@@ -424,5 +444,16 @@ mod tests {
         assert_eq!(app.on_key(key('n')), None);
         app.on_key(key('k'));
         assert_eq!(app.on_key(key('y')), Some(Action::Kill(7)));
+    }
+
+    #[test]
+    fn event_text_is_escaped() {
+        let mut e = ev(1, Level::Red, "a");
+        e.target = "curl x\u{1B}]52;c;ZXZpbA==\u{7}".into();
+        e.message = "line\u{1B}[1A".into();
+        let app = App::new(vec![e], 10, false, 0);
+        let e = app.event(0).unwrap();
+        assert_eq!(e.target, "curl x\\x1b]52;c;ZXZpbA==\\x07");
+        assert_eq!(e.message, "line\\x1b[1A");
     }
 }

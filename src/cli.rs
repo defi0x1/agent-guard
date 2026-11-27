@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::config::{self, Preset, TrustedHost};
+use crate::text::term_safe;
 use crate::{doctor, home, hook, install, pause, proxy, report, scan, top, vault};
 
 #[derive(Parser)]
@@ -179,7 +180,7 @@ fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
                 expires_at,
             });
             c.save()?;
-            println!("trusted {host}");
+            println!("trusted {}", term_safe(&host));
         }
         TrustCmd::Rm { host } => {
             let before = c.trust.hosts.len();
@@ -188,7 +189,7 @@ fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
                 anyhow::bail!("{host} is not in the trusted list");
             }
             c.save()?;
-            println!("removed {host}");
+            println!("removed {}", term_safe(&host));
         }
         TrustCmd::List => {
             if c.trust.hosts.is_empty() {
@@ -197,10 +198,10 @@ fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
             for t in &c.trust.hosts {
                 let mut extra = Vec::new();
                 if let Some(a) = &t.agent {
-                    extra.push(format!("agent={a}"));
+                    extra.push(format!("agent={}", term_safe(a)));
                 }
                 if let Some(p) = &t.process {
-                    extra.push(format!("process={p}"));
+                    extra.push(format!("process={}", term_safe(p)));
                 }
                 if let Some(e) = t.expires_at {
                     extra.push(format!(
@@ -208,13 +209,13 @@ fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
                         e.saturating_sub(home::now()) / 60
                     ));
                 }
-                println!("{}  {}", t.host, extra.join(" "));
+                println!("{}  {}", term_safe(&t.host), extra.join(" "));
             }
             for r in &c.trust.repos {
-                println!("repo {r}");
+                println!("repo {}", term_safe(r));
             }
             for b in &c.trust.blocked {
-                println!("blocked {b}");
+                println!("blocked {}", term_safe(b));
             }
         }
         TrustCmd::Repo { path } => {
@@ -227,14 +228,14 @@ fn trust(cmd: TrustCmd) -> anyhow::Result<()> {
                 c.trust.repos.push(p.clone());
             }
             c.save()?;
-            println!("trusted repository {p}");
+            println!("trusted repository {}", term_safe(&p));
         }
         TrustCmd::Block { host } => {
             if !c.trust.blocked.contains(&host) {
                 c.trust.blocked.push(host.clone());
             }
             c.save()?;
-            println!("blocked {host}");
+            println!("blocked {}", term_safe(&host));
         }
         TrustCmd::Review => crate::checks::net::review(&mut c)?,
     }

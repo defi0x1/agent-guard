@@ -5,6 +5,7 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Row, Table, TableState};
 
+use crate::text::term_safe;
 use crate::top::app::App;
 use crate::top::ui::selected_style;
 
@@ -21,7 +22,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or_default();
         Row::new(vec![
             r.proc.pid.to_string(),
-            format!("{indent}{}", r.proc.name),
+            format!("{indent}{}", term_safe(&r.proc.name)),
             format!("{:.1}", r.proc.cpu),
             r.conns.to_string(),
             remote,
