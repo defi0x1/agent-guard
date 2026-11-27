@@ -231,17 +231,30 @@ fn launcher(command: &[String]) -> Option<Command> {
 /// Whether an environment variable name looks like a credential.
 fn credential_like(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
-    n.starts_with("AWS_") || ["_SECRET", "_TOKEN", "_KEY"].iter().any(|p| n.contains(p))
+    n.starts_with("AWS_")
+        || [
+            "_SECRET",
+            "_TOKEN",
+            "_KEY",
+            "PASSWORD",
+            "PASSWD",
+            "DATABASE_URL",
+            "CREDENTIAL",
+            "PRIVATE_KEY",
+        ]
+        .iter()
+        .any(|p| n.contains(p))
 }
 
-/// The server's environment: `vars` without credential-looking names, unless `allowed`.
+/// The server's environment: `vars` without credential-looking names, unless `allowed`, and
+/// never `AGENT_GUARD_HOME`, so the server cannot find Agent Guard's own files through it.
 fn child_env(
     vars: impl Iterator<Item = (OsString, OsString)>,
     allowed: &[String],
 ) -> Vec<(OsString, OsString)> {
     vars.filter(|(k, _)| {
         let k = k.to_string_lossy();
-        !credential_like(&k) || allowed.iter().any(|a| *a == k)
+        k != "AGENT_GUARD_HOME" && (!credential_like(&k) || allowed.iter().any(|a| *a == k))
     })
     .collect()
 }
@@ -850,6 +863,12 @@ mod tests {
             "DB_SECRET",
             "my_api_key",
             "NOTION_TOKEN",
+            "DB_PASSWORD",
+            "MYSQL_PWD_PASSWD",
+            "DATABASE_URL",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "SSH_PRIVATE_KEY_PATH",
+            "AGENT_GUARD_HOME",
         ]
         .map(|k| (OsString::from(k), OsString::from("v")));
         let kept = |allowed: &[String]| -> Vec<String> {
@@ -859,6 +878,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(kept(&[]), ["PATH", "HOME", "SSH_AUTH_SOCK", "NODE_OPTIONS"]);
+        assert!(!kept(&["AGENT_GUARD_HOME".into()]).contains(&"AGENT_GUARD_HOME".to_string()));
         assert_eq!(
             kept(&["NOTION_TOKEN".into()]),
             [
