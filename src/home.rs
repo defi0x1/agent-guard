@@ -19,11 +19,29 @@ pub fn dir() -> io::Result<PathBuf> {
     Ok(PathBuf::from(home).join(".agent-guard"))
 }
 
-/// The directory, created with mode 0700 if missing (and tightened if it is looser).
+/// The directory, created with mode 0700 if missing (and tightened if it is looser). An error if
+/// the user cannot read and write it, so the guard fails loudly instead of running without state.
 pub fn ensure() -> io::Result<PathBuf> {
     let d = dir()?;
     private_dir(&d)?;
+    usable(&d)?;
     Ok(d)
+}
+
+/// An error unless the owner may list, enter and write `d`.
+fn usable(d: &Path) -> io::Result<()> {
+    let mode = fs::metadata(d)?.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is not usable (mode {:o}); run chmod 700 on it",
+                d.display(),
+                mode & 0o777
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Creates `d` (and missing parents) and makes sure only the user can open it.
@@ -186,6 +204,19 @@ mod tests {
             "the link is replaced"
         );
         assert_eq!(fs::read_to_string(&dangling).unwrap(), "x");
+    }
+
+    #[test]
+    fn unusable_directory_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        let g = d.path().join("g");
+        private_dir(&g).unwrap();
+        assert!(usable(&g).is_ok());
+        fs::set_permissions(&g, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(usable(&g).is_err());
+        fs::set_permissions(&g, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(usable(&g).is_err());
+        fs::set_permissions(&g, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
