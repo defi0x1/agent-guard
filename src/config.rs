@@ -113,11 +113,14 @@ impl Config {
         Ok(())
     }
 
-    /// The level for `rule`: the user's override, else the preset's default.
+    /// The level for `rule`: the user's override, else the preset's default. A rule whose
+    /// default is hard-block stays hard-block: those protect Agent Guard itself.
     pub fn level_for(&self, rule: &str, default: impl Fn(Preset) -> Level) -> Level {
-        self.rules
-            .get(rule)
-            .map_or_else(|| default(self.preset), |o| o.level)
+        let level = default(self.preset);
+        if level == Level::HardBlock {
+            return level;
+        }
+        self.rules.get(rule).map_or(level, |o| o.level)
     }
 
     /// Whether the user blocked `host`.
@@ -211,6 +214,23 @@ mod tests {
         assert!(!c.host_trusted("api.openai.com", Some("claude"), None, 0));
         assert!(c.host_trusted("x.ngrok-free.app", None, None, 99));
         assert!(!c.host_trusted("x.ngrok-free.app", None, None, 100));
+    }
+
+    #[test]
+    fn hard_block_rules_cannot_be_lowered() {
+        let mut c = Config::default();
+        for rule in ["paths.guard_files", "paths.guard_control", "x.y"] {
+            c.rules.insert(
+                rule.into(),
+                RuleOverride {
+                    level: Level::Green,
+                },
+            );
+        }
+        for rule in ["paths.guard_files", "paths.guard_control"] {
+            assert_eq!(c.level_for(rule, |_| Level::HardBlock), Level::HardBlock);
+        }
+        assert_eq!(c.level_for("x.y", |_| Level::Red), Level::Green);
     }
 
     #[test]
