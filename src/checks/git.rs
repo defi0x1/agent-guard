@@ -428,13 +428,21 @@ fn is_lfs_filter(v: &str) -> bool {
 fn runs_command(e: &Entry, value: &str) -> bool {
     match (e.section.as_str(), e.sub.is_some(), e.name.as_str()) {
         ("core", false, "fsmonitor") => !is_bool(value),
-        ("core", false, "sshcommand" | "pager" | "editor") => true,
+        ("core", false, "sshcommand" | "pager" | "editor" | "askpass" | "gitproxy") => true,
+        ("core", false, "alternaterefscommand") => true,
         ("sequence", false, "editor") => true,
+        ("pager", false, _) => !is_bool(value),
         ("diff", false, "external") => true,
-        ("diff", true, "textconv") => true,
+        ("diff", true, "textconv" | "command") => true,
+        ("merge", true, "driver") => true,
+        ("difftool" | "mergetool", true, "cmd") => true,
+        ("gpg", _, "program") => true,
+        ("gpg", true, "defaultkeycommand") => true,
         ("filter", true, "clean" | "smudge" | "process") => !is_lfs_filter(value),
         ("alias", _, _) => value.starts_with('!'),
-        ("credential", _, "helper") => value.starts_with('!'),
+        // A plain name runs the installed `git credential-<name>`.
+        ("credential", _, "helper") => value.starts_with(['!', '/']),
+        ("remote", true, "uploadpack" | "receivepack") => true,
         ("uploadpack", false, "packobjectshook") => true,
         _ => false,
     }
@@ -895,6 +903,38 @@ mod tests {
         assert_eq!(msgs.len(), 2, "{msgs:?}");
         assert!(msgs[0].contains("filter.x.smudge"));
         assert!(msgs[1].contains("credential.https://h.helper"));
+    }
+
+    #[test]
+    fn flags_every_key_that_runs_a_command() {
+        let f = fixture();
+        append_config(
+            &f,
+            "[gpg]\n\tprogram = ./g\n[gpg \"ssh\"]\n\tprogram = ./s\n\tdefaultKeyCommand = ./k\n[diff \"x\"]\n\tcommand = ./d\n[merge \"x\"]\n\tdriver = ./m %O %A %B\n[credential]\n\thelper = /tmp/h\n[core]\n\taskPass = ./a\n\tgitProxy = ./p\n\talternateRefsCommand = ./r\n[pager]\n\tlog = ./l\n\tdiff = false\n[difftool \"x\"]\n\tcmd = ./t\n[remote \"origin\"]\n\tuploadpack = ./u\n",
+        );
+        let v = run(&ctx(&f, Config::default()), "git status");
+        let keys: Vec<&str> = v
+            .findings
+            .iter()
+            .filter_map(|f| f.message.split(" sets ").nth(1)?.split(" = ").next())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "gpg.program",
+                "gpg.ssh.program",
+                "gpg.ssh.defaultKeyCommand",
+                "diff.x.command",
+                "merge.x.driver",
+                "credential.helper",
+                "core.askPass",
+                "core.gitProxy",
+                "core.alternateRefsCommand",
+                "pager.log",
+                "difftool.x.cmd",
+                "remote.origin.uploadpack",
+            ]
+        );
     }
 
     #[test]
