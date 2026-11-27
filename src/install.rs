@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, bail};
 use serde_json::{Map, Value, json};
 
-use crate::home;
+use crate::{hardened, home};
 
 /// The hook events Agent Guard handles, and whether each one takes a tool matcher.
 const EVENTS: [(&str, bool); 4] = [
@@ -120,6 +120,99 @@ pub fn uninstall() -> anyhow::Result<()> {
     let settings = settings_path()?;
     let out = uninstall_at(&settings, &home::ensure()?.join("backups"))?;
     print_outcome(&settings, &out, "Agent Guard was not installed");
+    Ok(())
+}
+
+/// `guard install --hardened`: prints every file it will write, then writes them when run as
+/// root. Otherwise it stops with the sudo command to run.
+pub fn install_hardened() -> anyhow::Result<()> {
+    let exe = current_exe()?;
+    let trusted = hardened::trusted_from_config(&crate::config::load().config);
+    install_hardened_at(
+        &hardened::Paths::system(),
+        &exe,
+        &trusted,
+        &settings_path()?,
+        hardened::is_root(),
+        &mut io::stdout(),
+    )
+}
+
+/// [`install_hardened`] with every path and the root check passed in.
+pub fn install_hardened_at(
+    paths: &hardened::Paths,
+    exe: &Path,
+    trusted: &[String],
+    user_settings: &Path,
+    root: bool,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    // The user's own settings still add sandbox exceptions on top of managed settings.
+    if let Some(v) = hardened::read_json(user_settings) {
+        let bad = hardened::dangers(&v);
+        if !bad.is_empty() {
+            bail!(
+                "{} has settings that break the sandbox; remove them first: {}",
+                user_settings.display(),
+                bad.join("; ")
+            );
+        }
+    }
+    let plan = hardened::install_plan(paths, exe, trusted, home::now())?;
+    writeln!(out, "Hardened mode will do this:\n{}", plan.describe())?;
+    if !root {
+        bail!(
+            "this needs root; run: sudo {} install --hardened",
+            shell_quote(&exe.to_string_lossy())
+        );
+    }
+    for p in [
+        paths.binary.as_path(),
+        &paths.policy_dir,
+        &paths.managed_settings,
+    ] {
+        if let Some(bad) = p.parent().and_then(hardened::unsafe_ancestor) {
+            bail!(
+                "{} can be changed without root, so files under it would not be safe; \
+                 make it root's (sudo chown root {0}; sudo chmod go-w {0}) and run again",
+                bad.display()
+            );
+        }
+    }
+    plan.apply(true)?;
+    writeln!(
+        out,
+        "Hardened mode is on. Restart Claude Code to apply. Undo with: sudo guard uninstall --hardened"
+    )?;
+    Ok(())
+}
+
+/// `guard uninstall --hardened`: puts the managed settings back as they were and removes the
+/// root-owned binary and policy folder.
+pub fn uninstall_hardened() -> anyhow::Result<()> {
+    uninstall_hardened_at(
+        &hardened::Paths::system(),
+        hardened::is_root(),
+        &mut io::stdout(),
+    )
+}
+
+pub fn uninstall_hardened_at(
+    paths: &hardened::Paths,
+    root: bool,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let plan = hardened::uninstall_plan(paths);
+    if plan.steps.is_empty() {
+        writeln!(out, "Hardened mode is not installed.")?;
+        return Ok(());
+    }
+    writeln!(out, "Uninstall will do this:\n{}", plan.describe())?;
+    if !root {
+        bail!("this needs root; run: sudo guard uninstall --hardened");
+    }
+    plan.apply(true)?;
+    writeln!(out, "Hardened mode is off. Restart Claude Code to apply.")?;
     Ok(())
 }
 
@@ -893,6 +986,76 @@ mod tests {
             judge(Expect::Cleaned, true, warn_only, ""),
             CaseResult::Fail(_)
         ));
+    }
+
+    fn hardened_paths(dir: &Path) -> hardened::Paths {
+        hardened::Paths {
+            managed_settings: dir.join("ClaudeCode/managed-settings.json"),
+            binary: dir.join("libexec/agent-guard/guard"),
+            policy_dir: dir.join("AgentGuard"),
+        }
+    }
+
+    #[test]
+    fn hardened_install_without_root_prints_the_plan_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = hardened_paths(dir.path());
+        let user = dir.path().join("settings.json");
+        let mut out = Vec::new();
+        let err = install_hardened_at(&paths, Path::new("/bin/ls"), &[], &user, false, &mut out)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("sudo /bin/ls install --hardened"),
+            "{err}"
+        );
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("managed-settings.json (root, 0644)"));
+        assert!(out.contains("\"args\": ["));
+        assert!(!paths.managed_settings.exists());
+        assert!(!paths.binary.exists());
+        assert!(!paths.policy_dir.exists());
+
+        let mut out = Vec::new();
+        uninstall_hardened_at(&paths, false, &mut out).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("not installed"));
+    }
+
+    #[test]
+    fn hardened_install_refuses_user_settings_that_break_the_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = hardened_paths(dir.path());
+        let user = dir.path().join("settings.json");
+        fs::write(&user, r#"{"sandbox": {"excludedCommands": ["bash *"]}}"#).unwrap();
+        let err = install_hardened_at(
+            &paths,
+            Path::new("/bin/ls"),
+            &[],
+            &user,
+            true,
+            &mut io::sink(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("bash *"), "{err}");
+        assert!(!paths.managed_settings.exists());
+    }
+
+    #[test]
+    fn hardened_install_as_root_refuses_folders_the_user_owns() {
+        // Temp dirs are the user's, so a "root" run must stop before writing anything.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = hardened_paths(dir.path());
+        let user = dir.path().join("settings.json");
+        let err = install_hardened_at(
+            &paths,
+            Path::new("/bin/ls"),
+            &[],
+            &user,
+            true,
+            &mut io::sink(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("without root"), "{err}");
+        assert!(!paths.managed_settings.exists());
     }
 
     #[test]
