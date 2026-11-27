@@ -70,10 +70,10 @@ pub fn pre(ctx: &Ctx, call: &ToolCall, v: &mut Verdict) {
         }
         if clones_submodules(&git) {
             found.extend(version_finding(ctx));
-            if git.sub != "clone" {
-                if let Some(repo) = find_repo(&git.dir).filter(|r| !trusted(ctx, r)) {
-                    found.extend(submodule_findings(ctx, &repo));
-                }
+            if git.sub != "clone"
+                && let Some(repo) = find_repo(&git.dir).filter(|r| !trusted(ctx, r))
+            {
+                found.extend(submodule_findings(ctx, &repo));
             }
         }
     }
@@ -464,10 +464,10 @@ fn config_findings(ctx: &Ctx, repo: &Repo, entries: &[Entry]) -> Vec<Finding> {
         ));
     };
     for e in entries {
-        if let Some(value) = e.value.as_deref().filter(|v| !v.is_empty()) {
-            if runs_command(e, value) {
-                flag(&e.key, value);
-            }
+        if let Some(value) = e.value.as_deref().filter(|v| !v.is_empty())
+            && runs_command(e, value)
+        {
+            flag(&e.key, value);
         }
     }
     // An in-repo `core.hooksPath` (husky and friends) is not flagged here: the hooks in it are

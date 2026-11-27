@@ -91,18 +91,17 @@ fn d06(env: &Env, s: &State, backup: &mut Backup) -> anyhow::Result<Vec<String>>
     for (p, _) in &s.settings {
         done.extend(edit(env, backup, p, |v| {
             let mut c = Vec::new();
-            if let Some(perm) = v.get_mut("permissions").and_then(Value::as_object_mut) {
-                if perm.get("defaultMode").and_then(Value::as_str) == Some("bypassPermissions") {
-                    perm.shift_remove("defaultMode");
-                    c.push("removed defaultMode bypassPermissions".to_string());
-                }
+            if let Some(perm) = v.get_mut("permissions").and_then(Value::as_object_mut)
+                && perm.get("defaultMode").and_then(Value::as_str) == Some("bypassPermissions")
+            {
+                perm.shift_remove("defaultMode");
+                c.push("removed defaultMode bypassPermissions".to_string());
             }
-            if let Some(m) = v.as_object_mut() {
-                if m.shift_remove("skipDangerousModePermissionPrompt")
+            if let Some(m) = v.as_object_mut()
+                && m.shift_remove("skipDangerousModePermissionPrompt")
                     .is_some()
-                {
-                    c.push("removed skipDangerousModePermissionPrompt".to_string());
-                }
+            {
+                c.push("removed skipDangerousModePermissionPrompt".to_string());
             }
             c
         })?);

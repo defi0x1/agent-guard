@@ -282,11 +282,11 @@ fn real_at(p: &Path, hops: u8) -> PathBuf {
                     Ok(r) => out = r,
                     Err(_) => {
                         on_disk = false;
-                        if hops < MAX_HOPS {
-                            if let Ok(target) = fs::read_link(&out) {
-                                let base = out.parent().map(Path::to_path_buf).unwrap_or_default();
-                                out = real_at(&base.join(target), hops + 1);
-                            }
+                        if hops < MAX_HOPS
+                            && let Ok(target) = fs::read_link(&out)
+                        {
+                            let base = out.parent().map(Path::to_path_buf).unwrap_or_default();
+                            out = real_at(&base.join(target), hops + 1);
                         }
                     }
                 }

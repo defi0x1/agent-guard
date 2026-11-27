@@ -710,10 +710,8 @@ impl Proxy {
                     b.server_key == e.server_key && b.tool == e.tool && b.reason == e.reason
                 })
             });
-        if !same {
-            if let Err(e) = write_json(&self.home.join("quarantine.json"), &entries) {
-                eprintln!("agent-guard: could not save quarantine.json: {e}");
-            }
+        if !same && let Err(e) = write_json(&self.home.join("quarantine.json"), &entries) {
+            eprintln!("agent-guard: could not save quarantine.json: {e}");
         }
     }
 }

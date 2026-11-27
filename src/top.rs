@@ -75,14 +75,12 @@ fn event_loop(
             last_procs = Some(Instant::now());
         }
         terminal.draw(|f| ui::draw(f, app))?;
-        if event::poll(Duration::from_millis(200))? {
-            if let event::Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
-                    if let Some(action) = app.on_key(k) {
-                        apply(action, app, &monitor);
-                    }
-                }
-            }
+        if event::poll(Duration::from_millis(200))?
+            && let event::Event::Key(k) = event::read()?
+            && k.kind == KeyEventKind::Press
+            && let Some(action) = app.on_key(k)
+        {
+            apply(action, app, &monitor);
         }
     }
     Ok(())

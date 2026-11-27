@@ -5,7 +5,8 @@
 pub fn decode(s: &str) -> Option<String> {
     let bytes = if s.contains('%') {
         percent(s)?
-    } else if s.len() >= 24 && s.len() % 2 == 0 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    } else if s.len() >= 24 && s.len().is_multiple_of(2) && s.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         hex(s)?
     } else if s.len() >= 16 {
         base64(s)?
