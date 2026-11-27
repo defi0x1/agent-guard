@@ -301,8 +301,9 @@ struct Entry {
 }
 
 /// Parses git config text: sections, subsections, quoting, escapes, comments and continuation
-/// lines. Malformed lines are skipped.
+/// lines. A leading UTF-8 BOM is dropped, as git does. Malformed lines are skipped.
 fn parse_config(text: &str) -> Vec<Entry> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut out = Vec::new();
     let mut section = String::new();
     let mut sub: Option<String> = None;
@@ -824,6 +825,13 @@ mod tests {
             (e[4].section.as_str(), e[4].name.as_str()),
             ("filter", "clean")
         );
+    }
+
+    #[test]
+    fn config_with_a_bom_keeps_its_first_section() {
+        let e = parse_config("\u{feff}[core]\n\tfsmonitor = ./x\n");
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].key, "core.fsmonitor");
     }
 
     #[test]
