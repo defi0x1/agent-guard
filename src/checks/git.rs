@@ -61,7 +61,7 @@ pub fn pre(ctx: &Ctx, call: &ToolCall, v: &mut Verdict) {
     };
     let mut found = Vec::new();
     for git in invocations(cmd, &ctx.cwd) {
-        if let Some(repo) = find_repo(&git.dir).filter(|r| !trusted(ctx, r)) {
+        if let Some(repo) = git.repo().filter(|r| !trusted(ctx, r)) {
             let entries = repo.config();
             found.extend(config_findings(ctx, &repo, &entries));
             if HOOK_SUBCOMMANDS.contains(&git.sub.as_str()) {
@@ -71,7 +71,7 @@ pub fn pre(ctx: &Ctx, call: &ToolCall, v: &mut Verdict) {
         if clones_submodules(&git) {
             found.extend(version_finding(ctx));
             if git.sub != "clone"
-                && let Some(repo) = find_repo(&git.dir).filter(|r| !trusted(ctx, r))
+                && let Some(repo) = git.repo().filter(|r| !trusted(ctx, r))
             {
                 found.extend(submodule_findings(ctx, &repo));
             }
@@ -106,16 +106,31 @@ fn push_unique(v: &mut Verdict, found: Vec<Finding>) {
 struct GitCall {
     /// The directory git runs in (after `cd` and `-C`).
     dir: PathBuf,
+    /// The repository named by `--git-dir` or `GIT_DIR`, which skips the search from `dir`.
+    git_dir: Option<PathBuf>,
     sub: String,
     args: Vec<String>,
 }
 
-/// Every git command in `cmd`, following `cd`/`pushd` and `git -C` from `cwd`.
+impl GitCall {
+    fn repo(&self) -> Option<Repo> {
+        match &self.git_dir {
+            Some(d) => Some(repo_at(self.dir.clone(), d.clone())),
+            None => find_repo(&self.dir),
+        }
+    }
+}
+
+/// Every git command in `cmd`, following `cd`/`pushd`, `export GIT_DIR=`, `GIT_DIR=` before
+/// the command, `git -C` and `git --git-dir` from `cwd`.
 fn invocations(cmd: &str, cwd: &Path) -> Vec<GitCall> {
     let mut dir = cwd.to_path_buf();
+    let mut exported: Option<String> = None;
     let mut out = Vec::new();
     for seg in shell::pipelines(cmd).into_iter().flatten() {
-        let mut words = shell::command(&seg.args).iter().map(String::as_str);
+        let command = shell::command(&seg.args);
+        let prefix = &seg.args[..seg.args.len() - command.len()];
+        let mut words = command.iter().map(String::as_str);
         let Some(first) = words.next() else {
             continue;
         };
@@ -125,22 +140,38 @@ fn invocations(cmd: &str, cwd: &Path) -> Vec<GitCall> {
                 Some("-") => {}
                 Some(d) => dir = resolve(&dir, d),
             },
+            "export" => {
+                if let Some(d) = words.filter_map(|w| w.strip_prefix("GIT_DIR=")).next_back() {
+                    exported = Some(d.to_string());
+                }
+            }
             w if w == "git" || w.ends_with("/git") => {
-                let mut git_dir = dir.clone();
+                let mut run_dir = dir.clone();
+                let mut git_dir = prefix
+                    .iter()
+                    .filter_map(|w| w.strip_prefix("GIT_DIR="))
+                    .next_back()
+                    .map(str::to_string)
+                    .or_else(|| exported.clone());
                 while let Some(w) = words.next() {
                     match w {
                         "-C" => {
                             if let Some(d) = words.next() {
-                                git_dir = resolve(&git_dir, d);
+                                run_dir = resolve(&run_dir, d);
                             }
                         }
-                        "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env" => {
+                        "--git-dir" => git_dir = words.next().map(str::to_string),
+                        "-c" | "--work-tree" | "--namespace" | "--config-env" => {
                             words.next();
+                        }
+                        w if w.starts_with("--git-dir=") => {
+                            git_dir = Some(w["--git-dir=".len()..].to_string());
                         }
                         w if w.starts_with('-') => {}
                         w => {
                             out.push(GitCall {
-                                dir: git_dir,
+                                git_dir: git_dir.map(|d| resolve(&run_dir, &d)),
+                                dir: run_dir,
                                 sub: w.to_string(),
                                 args: words.map(str::to_string).collect(),
                             });
@@ -249,29 +280,46 @@ impl Repo {
     }
 }
 
-/// The repository containing `start`, if any.
+/// The repository containing `start`, if any. Like git, each directory is tried first for a
+/// `.git` directory or `gitdir:` file, then as a bare repository itself.
 fn find_repo(start: &Path) -> Option<Repo> {
     for dir in start.ancestors() {
         let dot = dir.join(".git");
-        let git_dir = if dot.is_dir() {
-            dot
-        } else if dot.is_file() {
+        if dot.is_dir() {
+            return Some(repo_at(dir.to_path_buf(), dot));
+        }
+        if dot.is_file() {
             let text = fs::read_to_string(&dot).ok()?;
             let target = text.trim().strip_prefix("gitdir:")?.trim();
-            normalize(&dir.join(target))
-        } else {
-            continue;
-        };
-        let common_dir = fs::read_to_string(git_dir.join("commondir"))
-            .map(|c| normalize(&git_dir.join(c.trim())))
-            .unwrap_or_else(|_| git_dir.clone());
-        return Some(Repo {
-            root: dir.to_path_buf(),
-            git_dir,
-            common_dir,
-        });
+            return Some(repo_at(dir.to_path_buf(), normalize(&dir.join(target))));
+        }
+        if is_git_dir(dir) {
+            // Inside a working tree's `.git`, the repository is still the working tree's.
+            let root = match dir.parent() {
+                Some(p) if dir.file_name().is_some_and(|n| n == ".git") => p,
+                _ => dir,
+            };
+            return Some(repo_at(root.to_path_buf(), dir.to_path_buf()));
+        }
     }
     None
+}
+
+/// Whether `dir` looks like a git directory to git: `HEAD`, `objects/` and `refs/`.
+fn is_git_dir(dir: &Path) -> bool {
+    dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir()
+}
+
+/// The repository with working tree `root` and git directory `git_dir`.
+fn repo_at(root: PathBuf, git_dir: PathBuf) -> Repo {
+    let common_dir = fs::read_to_string(git_dir.join("commondir"))
+        .map(|c| normalize(&git_dir.join(c.trim())))
+        .unwrap_or_else(|_| git_dir.clone());
+    Repo {
+        root,
+        git_dir,
+        common_dir,
+    }
 }
 
 fn trusted(ctx: &Ctx, repo: &Repo) -> bool {
@@ -788,11 +836,13 @@ mod tests {
             [
                 GitCall {
                     dir: "/w/proj/other".into(),
+                    git_dir: None,
                     sub: "commit".into(),
                     args: vec!["-m".into(), "a b; c".into()],
                 },
                 GitCall {
                     dir: "/w/proj/sub".into(),
+                    git_dir: None,
                     sub: "status".into(),
                     args: vec![],
                 },
@@ -803,6 +853,60 @@ mod tests {
             Path::new("/x")
         );
         assert!(invocations("echo git commit; gitk --all", cwd).is_empty());
+    }
+
+    /// A bare repository `dir` with `core.fsmonitor` set, as an attacker would plant it.
+    fn bare_repo(dir: &Path) {
+        fs::create_dir_all(dir.join("objects")).unwrap();
+        fs::create_dir_all(dir.join("refs")).unwrap();
+        fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(
+            dir.join("config"),
+            "[core]\n\tbare = true\n\tfsmonitor = ./x\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn finds_a_planted_bare_repo() {
+        let f = fixture();
+        bare_repo(&f.repo.join("evil"));
+        let c = ctx(&f, Config::default());
+        assert_eq!(rules(&run(&c, "git -C evil status")), ["git.exec_config"]);
+        assert_eq!(
+            rules(&run(&c, "cd evil/refs && git log")),
+            ["git.exec_config"]
+        );
+        assert!(run(&c, "git status").findings.is_empty());
+        // Inside a working tree's own `.git`, the repository is the working tree's.
+        let git = f.repo.join(".git");
+        fs::create_dir_all(git.join("objects")).unwrap();
+        fs::create_dir_all(git.join("refs")).unwrap();
+        fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        append_config(&f, "[core]\n\tpager = ./p\n");
+        assert_eq!(rules(&run(&c, "git -C .git log")), ["git.exec_config"]);
+        let mut config = Config::default();
+        config.trust.repos.push(f.repo.display().to_string());
+        assert!(run(&ctx(&f, config), "git -C .git log").findings.is_empty());
+    }
+
+    #[test]
+    fn follows_git_dir_and_gitdir_files() {
+        let f = fixture();
+        bare_repo(&f.home.join("b"));
+        let c = ctx(&f, Config::default());
+        for cmd in [
+            "git --git-dir=../home/b status",
+            "git --git-dir ../home/b log",
+            "GIT_DIR=../home/b git status",
+            "env GIT_DIR=../home/b git status",
+            "export GIT_DIR=../home/b; git status",
+        ] {
+            assert_eq!(rules(&run(&c, cmd)), ["git.exec_config"], "{cmd}");
+        }
+        fs::create_dir_all(f.repo.join("sub")).unwrap();
+        fs::write(f.repo.join("sub/.git"), "gitdir: ../../home/b\n").unwrap();
+        assert_eq!(rules(&run(&c, "git -C sub status")), ["git.exec_config"]);
     }
 
     #[test]
