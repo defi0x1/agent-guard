@@ -68,6 +68,19 @@ pub fn collect_strings<'v>(v: &'v Value, out: &mut Vec<&'v str>) {
     }
 }
 
+/// Every string anywhere in `v`, object keys included: a server controls its keys too.
+pub fn collect_text<'v>(v: &'v Value, out: &mut Vec<&'v str>) {
+    match v {
+        Value::String(s) => out.push(s),
+        Value::Array(a) => a.iter().for_each(|x| collect_text(x, out)),
+        Value::Object(m) => m.iter().for_each(|(k, x)| {
+            out.push(k);
+            collect_text(x, out);
+        }),
+        _ => {}
+    }
+}
+
 /// What a PostToolUse check produced: findings, and possibly a cleaned result to show Claude.
 #[derive(Default)]
 pub struct PostResult {
