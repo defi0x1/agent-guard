@@ -330,7 +330,7 @@ fn load(path: &Path) -> Option<State> {
 /// Adds one event as a single appended line.
 fn append(path: &Path, e: &Event) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        crate::home::private_dir(dir)?;
     }
     let mut line = serde_json::to_vec(e).map_err(std::io::Error::other)?;
     line.push(b'\n');
