@@ -30,7 +30,10 @@ fi
 
 tar xzf "$tmp/guard.tar.gz" -C "$tmp"
 mkdir -p "$dir"
-install -m 755 "$tmp/guard-$target/guard" "$dir/guard"
+# Write a new file and rename it over the old one. Overwriting a running binary in place makes
+# macOS kill it, and every hook call would then fail closed.
+install -m 755 "$tmp/guard-$target/guard" "$dir/.guard.new"
+mv -f "$dir/.guard.new" "$dir/guard"
 echo "Installed $dir/guard"
 case ":$PATH:" in
   *":$dir:"*) ;;
