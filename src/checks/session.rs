@@ -3,6 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -39,7 +41,7 @@ pub const RULES: &[(&str, &str)] = &[
 
 /// Lines shorter than this are too common to fingerprint.
 const MIN_LINE: usize = 40;
-/// Fingerprints kept per session.
+/// Fingerprints kept per session: the newest ones.
 const MAX_HASHES: usize = 2000;
 /// Session files older than this are deleted at session start.
 const SESSION_TTL: u64 = 7 * 24 * 3600;
@@ -252,24 +254,71 @@ fn plugins(v: &Value, out: &mut BTreeMap<String, String>) {
 // Lethal trifecta
 // ---------------------------------------------------------------------------------------------
 
-/// What one session has seen. Stored in `<home>/sessions/<session>.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// What one session has seen, folded from its events.
+#[derive(Debug, Default)]
 struct State {
     /// Read content from outside (web, issues, chat, mail).
-    #[serde(default)]
     untrusted: bool,
     /// Read private data (secrets, credentials, `.env`).
+    private: bool,
+    /// SHA-256 of long lines from private results, the newest [`MAX_HASHES`].
+    hashes: BTreeSet<String>,
+}
+
+/// One tool result that brought something in: a line in `<home>/sessions/<session>.jsonl`.
+/// Hook runs only append lines, so parallel runs never lose each other's updates.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Event {
+    #[serde(default)]
+    untrusted: bool,
     #[serde(default)]
     private: bool,
-    /// SHA-256 of long lines from private results.
-    #[serde(default)]
-    hashes: BTreeSet<String>,
+    /// Oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hashes: Vec<String>,
+}
+
+/// The session's state from its event file, or `None` if there is none.
+fn load(path: &Path) -> Option<State> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut state = State::default();
+    let mut hashes = Vec::new();
+    for e in text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Event>(l).ok())
+    {
+        state.untrusted |= e.untrusted;
+        state.private |= e.private;
+        hashes.extend(e.hashes);
+    }
+    for h in hashes.into_iter().rev() {
+        if state.hashes.len() >= MAX_HASHES {
+            break;
+        }
+        state.hashes.insert(h);
+    }
+    Some(state)
+}
+
+/// Adds one event as a single appended line.
+fn append(path: &Path, e: &Event) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut line = serde_json::to_vec(e).map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(&line)
 }
 
 /// Before a tool runs: warns when a session that read outside content and private data sends
 /// data out, and asks when it sends a line of that private data.
 pub fn pre(ctx: &Ctx, call: &ToolCall, v: &mut Verdict) {
-    let Some(state) = session_file(ctx).and_then(|p| read_json::<State>(&p)) else {
+    let Some(state) = session_file(ctx).and_then(|p| load(&p)) else {
         return;
     };
     let Some(via) = outgoing(call) else {
@@ -312,33 +361,33 @@ pub fn post(ctx: &Ctx, call: &ToolCall, response: &Value, r: &mut PostResult) {
     let Some(path) = session_file(ctx) else {
         return;
     };
-    let mut state: State = read_json(&path).unwrap_or_default();
-    state.untrusted |= untrusted;
+    let mut event = Event {
+        untrusted,
+        private,
+        hashes: Vec::new(),
+    };
     if private {
-        state.private = true;
+        // The newest lines of this result that the session does not hold yet.
+        let known = load(&path).map(|s| s.hashes).unwrap_or_default();
         let mut texts = Vec::new();
         collect_strings(response, &mut texts);
-        for line in texts.iter().flat_map(|t| t.lines()) {
-            if state.hashes.len() >= MAX_HASHES {
-                break;
-            }
-            let line = line.trim();
-            if line.chars().count() >= MIN_LINE {
-                state.hashes.insert(hash(line));
+        let lines: Vec<&str> = texts
+            .iter()
+            .flat_map(|t| t.lines())
+            .map(str::trim)
+            .filter(|l| l.chars().count() >= MIN_LINE)
+            .collect();
+        let mut seen = BTreeSet::new();
+        for line in &lines[lines.len().saturating_sub(MAX_HASHES)..] {
+            let h = hash(line);
+            if !known.contains(&h) && seen.insert(h.clone()) {
+                event.hashes.push(h);
             }
         }
     }
-    if let Err(e) = save(&path, &state) {
+    if let Err(e) = append(&path, &event) {
         eprintln!("agent-guard: session state: {e}");
     }
-}
-
-fn save(path: &Path, state: &State) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let data = serde_json::to_vec(state).map_err(std::io::Error::other)?;
-    home::write_private(path, &data)
 }
 
 /// The session's state file. Ids that are not plain names are hashed, so they stay in the
@@ -353,7 +402,7 @@ fn session_file(ctx: &Ctx) -> Option<PathBuf> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     let name = if plain { id.clone() } else { hash(id) };
-    Some(ctx.home.join("sessions").join(format!("{name}.json")))
+    Some(ctx.home.join("sessions").join(format!("{name}.jsonl")))
 }
 
 /// Deletes session files not modified for [`SESSION_TTL`].
@@ -756,7 +805,7 @@ mod tests {
             json!("A="),
             &[],
         );
-        let s: State = read_json(&session_file(&e.ctx).unwrap()).unwrap();
+        let s = load(&session_file(&e.ctx).unwrap()).unwrap();
         assert!(s.untrusted && !s.private);
         run_post(
             &e,
@@ -765,7 +814,7 @@ mod tests {
             json!("k"),
             &["secrets.provider_key"],
         );
-        let s: State = read_json(&session_file(&e.ctx).unwrap()).unwrap();
+        let s = load(&session_file(&e.ctx).unwrap()).unwrap();
         assert!(s.private);
     }
 
@@ -808,14 +857,45 @@ mod tests {
     }
 
     #[test]
-    fn hashes_are_capped() {
+    fn hashes_are_capped_keeping_the_newest() {
         let e = env();
-        let text: String = (0..2500)
-            .map(|i| format!("a line long enough to fingerprint, number {i:05}\n"))
-            .collect();
+        let line = |i: usize| format!("a line long enough to fingerprint, number {i:05}");
+        let text: String = (0..2500).map(|i| line(i) + "\n").collect();
         run_post(&e, "Read", json!({"file_path": ".env"}), json!(text), &[]);
-        let s: State = read_json(&session_file(&e.ctx).unwrap()).unwrap();
+        let later: String = (2500..2600).map(|i| line(i) + "\n").collect();
+        run_post(&e, "Read", json!({"file_path": ".env"}), json!(later), &[]);
+        let s = load(&session_file(&e.ctx).unwrap()).unwrap();
         assert_eq!(s.hashes.len(), MAX_HASHES);
+        assert!(s.hashes.contains(&hash(&line(2599))));
+        assert!(s.hashes.contains(&hash(&line(600))));
+        assert!(!s.hashes.contains(&hash(&line(599))));
+    }
+
+    #[test]
+    fn parallel_updates_lose_nothing() {
+        let e = env();
+        std::thread::scope(|scope| {
+            for i in 0..20 {
+                let e = &e;
+                scope.spawn(move || {
+                    if i % 2 == 0 {
+                        run_post(
+                            e,
+                            "WebFetch",
+                            json!({"url": "https://x.io"}),
+                            json!("p"),
+                            &[],
+                        );
+                    } else {
+                        let line = format!("SECRET_{i:02}=abcdefghijklmnopqrstuvwxyz0123456789");
+                        run_post(e, "Read", json!({"file_path": ".env"}), json!(line), &[]);
+                    }
+                });
+            }
+        });
+        let s = load(&session_file(&e.ctx).unwrap()).unwrap();
+        assert!(s.untrusted && s.private);
+        assert_eq!(s.hashes.len(), 10);
     }
 
     #[test]
