@@ -148,8 +148,14 @@ fn answer(event: &str, v: &Verdict, replaced: Option<Value>, context: &[String])
             specific.insert("permissionDecisionReason".into(), json!(text));
         }
         ("UserPromptSubmit", Level::Red | Level::HardBlock) => {
+            // A prompt cannot be confirmed, only stopped before it is sent.
+            let body: Vec<&str> = v.top().map(|f| f.message.as_str()).collect();
+            let body = body.join(" ");
             out.insert("decision".into(), json!("block"));
-            out.insert("reason".into(), json!(text));
+            out.insert(
+                "reason".into(),
+                json!(format!("Agent Guard stopped this prompt: {body}")),
+            );
         }
         (_, Level::Yellow | Level::Red | Level::HardBlock) => {
             out.insert("systemMessage".into(), json!(text));
@@ -196,6 +202,8 @@ fn log(ctx: &Ctx, input: &Input, call: Option<&ToolCall>, v: &Verdict, paused: b
         level: Some(v.level()),
         rules,
         message: message(v),
+        // The hook's parent is the agent process, which `guard top` shows the call under.
+        pid: Some(std::os::unix::process::parent_id()),
         ..Event::default()
     };
     // Logging must never break the agent; a failed write is reported on stderr only.
@@ -242,6 +250,7 @@ mod tests {
         assert_eq!(h["hookSpecificOutput"]["permissionDecision"], "deny");
         let p = answer("UserPromptSubmit", &verdict(Level::Red), None, &[]).unwrap();
         assert_eq!(p["decision"], "block");
+        assert_eq!(p["reason"], "Agent Guard stopped this prompt: because");
     }
 
     #[test]
