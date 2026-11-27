@@ -14,9 +14,27 @@ pub fn dir() -> io::Result<PathBuf> {
     if let Some(p) = std::env::var_os("AGENT_GUARD_HOME") {
         return Ok(PathBuf::from(p));
     }
+    Ok(user_home()?.join(".agent-guard"))
+}
+
+/// The user's home. Under `sudo` (hardened install, policy changes) that is the invoking user's
+/// home, not root's, so their config and trusted hosts are used.
+pub fn user_home() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".agent-guard"))
+    let root_home = home == Path::new("/var/root") || home == Path::new("/root");
+    match std::env::var("SUDO_USER") {
+        Ok(user) if root_home && !user.is_empty() && !user.contains('/') => {
+            let base = if cfg!(target_os = "macos") {
+                "/Users"
+            } else {
+                "/home"
+            };
+            Ok(Path::new(base).join(user))
+        }
+        _ => Ok(home),
+    }
 }
 
 /// The directory, created with mode 0700 if missing (and tightened if it is looser). An error if
