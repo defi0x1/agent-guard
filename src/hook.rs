@@ -151,8 +151,7 @@ fn answer(event: &str, v: &Verdict, replaced: Option<Value>, context: &[String])
         }
         ("UserPromptSubmit", Level::Red | Level::HardBlock) => {
             // A prompt cannot be confirmed, only stopped before it is sent.
-            let body: Vec<&str> = v.top().map(|f| f.message.as_str()).collect();
-            let body = body.join(" ");
+            let body = findings_text(v);
             out.insert("decision".into(), json!("block"));
             out.insert(
                 "reason".into(),
@@ -168,7 +167,8 @@ fn answer(event: &str, v: &Verdict, replaced: Option<Value>, context: &[String])
         specific.insert("updatedToolOutput".into(), r);
     }
     if !context.is_empty() {
-        specific.insert("additionalContext".into(), json!(context.join(" ")));
+        let context = checks::secrets::redact(&context.join(" "));
+        specific.insert("additionalContext".into(), json!(context));
     }
     if specific.len() > 1 {
         out.insert("hookSpecificOutput".into(), Value::Object(specific));
@@ -184,8 +184,13 @@ fn message(v: &Verdict) -> String {
         Level::Yellow => "Agent Guard warning:",
         Level::Green => "",
     };
+    format!("{prefix} {}", findings_text(v)).trim().to_string()
+}
+
+/// The top findings' messages, with any key in them masked: they reach the log and Claude.
+fn findings_text(v: &Verdict) -> String {
     let body: Vec<&str> = v.top().map(|f| f.message.as_str()).collect();
-    format!("{prefix} {}", body.join(" ")).trim().to_string()
+    checks::secrets::redact(&body.join(" "))
 }
 
 fn log(ctx: &Ctx, input: &Input, call: Option<&ToolCall>, v: &Verdict, paused: bool) {
@@ -253,6 +258,22 @@ mod tests {
         let p = answer("UserPromptSubmit", &verdict(Level::Red), None, &[]).unwrap();
         assert_eq!(p["decision"], "block");
         assert_eq!(p["reason"], "Agent Guard stopped this prompt: because");
+    }
+
+    #[test]
+    fn messages_and_context_mask_keys() {
+        let key = format!("ghp_{}", "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A");
+        let mut v = Verdict::default();
+        v.push(Finding::new("t", Level::Red, format!("saw {key} here")));
+        let text = message(&v);
+        assert!(text.contains("saw ") && !text.contains(&key), "{text}");
+        let a = answer("PostToolUse", &v, None, &[format!("ctx {key}")]).unwrap();
+        let ctx = a["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(!ctx.contains(&key), "{ctx}");
+        let p = answer("UserPromptSubmit", &v, None, &[]).unwrap();
+        assert!(!p["reason"].as_str().unwrap().contains(&key));
     }
 
     #[test]
