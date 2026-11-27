@@ -23,7 +23,11 @@ enum Cmd {
     /// Live view of every agent's tool calls, processes and connections.
     Top,
     /// One line for Claude Code's status line.
-    Statusline,
+    Statusline {
+        /// Also run the status line `guard install` wrapped, below Agent Guard's line.
+        #[arg(long)]
+        wrap: bool,
+    },
     /// Check this machine's agent setup and fix what is unsafe.
     Doctor {
         /// Fix one finding by id (for example D03), or `all`.
@@ -114,7 +118,7 @@ pub fn run() -> anyhow::Result<()> {
     match Cli::parse().cmd {
         Cmd::Hook => hook::run(),
         Cmd::Top => top::run(),
-        Cmd::Statusline => top::statusline(),
+        Cmd::Statusline { wrap } => crate::statusline::run(wrap),
         Cmd::Doctor { fix, undo } => doctor::run(fix.as_deref(), undo),
         Cmd::Scan => scan::run(),
         Cmd::Proxy { command } => proxy::run(&command),

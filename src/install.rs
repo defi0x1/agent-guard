@@ -175,21 +175,35 @@ pub fn install_at(settings: &Path, backups: &Path, exe: &Path) -> anyhow::Result
     }
 
     let status_line = json!({"type": "command", "command": format!("{program} statusline")});
-    match s.get("statusLine") {
+    match s.get("statusLine").cloned() {
         None => {
             s.insert("statusLine".into(), status_line);
             out.changes.push("added status line".into());
         }
-        Some(current) if current == &status_line => {}
-        Some(current) if is_guard_command(current, "statusline") => {
-            s.insert("statusLine".into(), status_line);
-            out.changes.push("updated status line".into());
+        Some(current) if current == status_line => {}
+        Some(current) if is_guard_status_line(&current) => {
+            // Keep wrapping what was wrapped before, with the new program path.
+            let mut next = current.clone();
+            next["command"] = json!(if runs_guard(command_of(&current), "statusline --wrap") {
+                format!("{program} statusline --wrap")
+            } else {
+                format!("{program} statusline")
+            });
+            if next != current {
+                s.insert("statusLine".into(), next);
+                out.changes.push("updated status line".into());
+            }
         }
-        Some(_) => out.notes.push(format!(
-            "You already have a status line, so it was left alone. To show Agent Guard's, \
-             set statusLine.command to \"{program} statusline\" in {}.",
-            settings.display()
-        )),
+        Some(current) => {
+            // Put Agent Guard's line on top of the user's own status line instead of replacing it.
+            let wrapped = wrapped_path(backups);
+            home::write_private(&wrapped, serde_json::to_string_pretty(&current)?.as_bytes())?;
+            let mut next = current.clone();
+            next["command"] = json!(format!("{program} statusline --wrap"));
+            s.insert("statusLine".into(), next);
+            out.changes
+                .push("added Agent Guard's line above your status line".into());
+        }
     }
 
     if !out.changes.is_empty() {
@@ -222,11 +236,23 @@ pub fn uninstall_at(settings: &Path, backups: &Path) -> anyhow::Result<Outcome> 
             s.shift_remove("hooks");
         }
     }
-    if s.get("statusLine")
-        .is_some_and(|v| is_guard_command(v, "statusline"))
-    {
-        s.shift_remove("statusLine");
-        out.changes.push("removed status line".into());
+    if let Some(current) = s.get("statusLine").cloned().filter(is_guard_status_line) {
+        let wrapped = wrapped_path(backups);
+        match std::fs::read_to_string(&wrapped)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .filter(|_| runs_guard(command_of(&current), "statusline --wrap"))
+        {
+            Some(original) => {
+                s.insert("statusLine".into(), original);
+                out.changes.push("restored your status line".into());
+            }
+            None => {
+                s.shift_remove("statusLine");
+                out.changes.push("removed status line".into());
+            }
+        }
+        let _ = std::fs::remove_file(&wrapped);
     }
     if !out.changes.is_empty() {
         out.backup = backup(settings, backups)?;
@@ -275,6 +301,23 @@ fn has_guard_hook(group: &Value) -> bool {
 }
 
 /// Whether `entry.command` runs `guard <sub>` (or `agent-guard <sub>`) from any path.
+/// Agent Guard's own status line, plain or wrapping the user's.
+fn is_guard_status_line(entry: &Value) -> bool {
+    is_guard_command(entry, "statusline") || is_guard_command(entry, "statusline --wrap")
+}
+
+fn command_of(entry: &Value) -> &str {
+    entry.get("command").and_then(Value::as_str).unwrap_or("")
+}
+
+/// The saved copy of the status line Agent Guard wraps; it sits next to the backups folder.
+fn wrapped_path(backups: &Path) -> PathBuf {
+    backups
+        .parent()
+        .unwrap_or(backups)
+        .join(crate::statusline::WRAPPED_FILE)
+}
+
 fn is_guard_command(entry: &Value, sub: &str) -> bool {
     entry
         .get("command")
@@ -673,19 +716,28 @@ mod tests {
     }
 
     #[test]
-    fn existing_status_line_is_left_alone() {
+    fn existing_status_line_is_wrapped_and_restored() {
         let (_d, settings, backups) = setup(Some(
-            r#"{"statusLine": {"type": "command", "command": "~/hud.sh"}}"#,
+            r#"{"statusLine": {"type": "command", "command": "~/hud.sh", "refreshInterval": 5}}"#,
         ));
         let out = install_at(&settings, &backups, Path::new("/bin/guard")).unwrap();
-        assert_eq!(out.changes.len(), 4);
-        assert_eq!(out.notes.len(), 1);
-        assert!(out.notes[0].contains("/bin/guard statusline"));
-        assert_eq!(load(&settings)["statusLine"]["command"], "~/hud.sh");
-        // The note repeats, but nothing is rewritten.
+        assert_eq!(out.changes.len(), 5);
+        let s = load(&settings);
+        assert_eq!(s["statusLine"]["command"], "/bin/guard statusline --wrap");
+        assert_eq!(s["statusLine"]["refreshInterval"], 5);
+        let saved = crate::statusline::wrapped_command(backups.parent().unwrap());
+        assert_eq!(saved.as_deref(), Some("~/hud.sh"));
+        // Installing again changes nothing and keeps the saved original.
         let again = install_at(&settings, &backups, Path::new("/bin/guard")).unwrap();
         assert!(again.changes.is_empty());
-        assert_eq!(again.notes.len(), 1);
+        assert!(crate::statusline::wrapped_command(backups.parent().unwrap()).is_some());
+        // Uninstall puts the user's status line back exactly.
+        uninstall_at(&settings, &backups).unwrap();
+        assert_eq!(
+            load(&settings)["statusLine"],
+            serde_json::json!({"type": "command", "command": "~/hud.sh", "refreshInterval": 5})
+        );
+        assert!(crate::statusline::wrapped_command(backups.parent().unwrap()).is_none());
     }
 
     #[test]
