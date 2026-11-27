@@ -62,7 +62,8 @@ fn state(input: &str) -> anyhow::Result<State> {
     if !hardened && matches!(install::installed(), Installed::No) {
         return Ok(State::NotInstalled);
     }
-    if project_dir(&v).is_some_and(|d| hooks_disabled(&d)) {
+    // A project's disableAllHooks does not reach managed hooks, so it only matters in light mode.
+    if !hardened && project_dir(&v).is_some_and(|d| hooks_disabled(&d)) {
         return Ok(State::OffInProject);
     }
     if let Some(until) = pause::active(now) {
