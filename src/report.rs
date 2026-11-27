@@ -1,7 +1,7 @@
 //! `guard report`, `guard explain`, `guard status`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail};
 
@@ -47,6 +47,12 @@ pub fn status() -> anyhow::Result<()> {
         ),
         None => println!("Agent Guard is on."),
     }
+    if let Some(dir) = moved_home() {
+        println!(
+            "Home: {} (moved by AGENT_GUARD_HOME; the default is ~/.agent-guard)",
+            term_safe(&dir.to_string_lossy())
+        );
+    }
     println!("Level: {}", preset_name(&loaded.config));
     match &loaded.error {
         Some(e) => println!(
@@ -65,6 +71,14 @@ pub fn status() -> anyhow::Result<()> {
     let day: Vec<&Event> = events.iter().filter(|e| e.ts >= from).collect();
     println!("Last 24 hours: {}", Counts::of(&day).line());
     Ok(())
+}
+
+/// Agent Guard's directory when `AGENT_GUARD_HOME` moves it away from `~/.agent-guard`. A
+/// project's settings can set that variable, so the move is always shown.
+pub fn moved_home() -> Option<PathBuf> {
+    let set = PathBuf::from(std::env::var_os("AGENT_GUARD_HOME")?);
+    let default = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".agent-guard"));
+    (default.as_ref() != Some(&set)).then_some(set)
 }
 
 /// Events per level. Events without a level (plain observations) count as green.

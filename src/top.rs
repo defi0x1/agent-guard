@@ -158,7 +158,11 @@ pub fn statusline() -> anyhow::Result<()> {
         .then(String::new)
         .or_else(|| std::io::read_to_string(std::io::stdin()).ok())
         .is_some_and(|raw| hooks_disabled(&raw));
-    println!("{}", status_text(counts, paused, off, !no_color()));
+    let home = crate::report::moved_home().map(|d| d.to_string_lossy().into_owned());
+    println!(
+        "{}",
+        status_text(counts, paused, off, home.as_deref(), !no_color())
+    );
     Ok(())
 }
 
@@ -179,8 +183,9 @@ fn hooks_disabled(status_input: &str) -> bool {
     })
 }
 
-/// The status line text, with ANSI colors when `color` is set.
-fn status_text(c: Counts, paused: bool, off: bool, color: bool) -> String {
+/// The status line text, with ANSI colors when `color` is set. `home` is Agent Guard's directory
+/// when it is not the default one.
+fn status_text(c: Counts, paused: bool, off: bool, home: Option<&str>, color: bool) -> String {
     if off {
         let msg = "◆ guard OFF in this project (disableAllHooks)";
         return if color {
@@ -208,6 +213,9 @@ fn status_text(c: Counts, paused: bool, off: bool, color: bool) -> String {
     if paused {
         s.push_str(" paused");
     }
+    if let Some(h) = home {
+        s.push_str(&format!(" home {}", crate::text::term_safe(h)));
+    }
     s
 }
 
@@ -222,15 +230,22 @@ mod tests {
             yellow: 2,
             green: 30,
         };
-        assert_eq!(status_text(c, false, false, false), "◆ guard ● 1 ● 2 ● 30");
         assert_eq!(
-            status_text(c, true, false, false),
+            status_text(c, false, false, None, false),
+            "◆ guard ● 1 ● 2 ● 30"
+        );
+        assert_eq!(
+            status_text(c, true, false, None, false),
             "◆ guard ● 1 ● 2 ● 30 paused"
         );
-        let colored = status_text(c, false, false, true);
+        let colored = status_text(c, false, false, None, true);
         assert!(colored.contains("\x1b[31m●\x1b[0m 1"));
         assert!(colored.contains("\x1b[33m●\x1b[0m 2"));
         assert!(colored.contains("\x1b[32m●\x1b[0m 30"));
+        assert_eq!(
+            status_text(c, false, false, Some("/p/.g\x1b[8m"), false),
+            "◆ guard ● 1 ● 2 ● 30 home /p/.g\\x1b[8m"
+        );
     }
 
     #[test]
@@ -246,7 +261,7 @@ mod tests {
         .unwrap();
         assert!(hooks_disabled(&input));
         let c = Counts::default();
-        assert!(status_text(c, false, true, false).contains("OFF"));
+        assert!(status_text(c, false, true, None, false).contains("OFF"));
     }
 
     #[test]
