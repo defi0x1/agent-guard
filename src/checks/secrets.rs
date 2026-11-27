@@ -6,11 +6,10 @@
 //! another service's key.
 
 mod decode;
+mod ignore;
 mod keys;
 mod store;
 
-use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -217,7 +216,7 @@ fn check_pre(ctx: &Ctx, call: &ToolCall, store: &Store, v: &mut Verdict) {
 
     if local {
         if let Some(path) = call.str("file_path").map(|p| ctx.cwd.join(p))
-            && git_would_track(&path)
+            && ignore::would_track(&path)
         {
             let shown = path.strip_prefix(&ctx.cwd).unwrap_or(&path).display();
             let level = ctx
@@ -256,23 +255,6 @@ fn check_pre(ctx: &Ctx, call: &ToolCall, store: &Store, v: &mut Verdict) {
         );
         v.push(Finding::new("secrets.outbound", level, msg));
     }
-}
-
-/// Whether `path` is inside a git work tree and not ignored, so a commit would include it.
-fn git_would_track(path: &Path) -> bool {
-    let Some(dir) = path.ancestors().skip(1).find(|d| d.is_dir()) else {
-        return false;
-    };
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["check-ignore", "-q", "--"])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.code() == Some(1))
 }
 
 /// After a tool ran: redact secrets in MCP and web results; flag keys in Read, Bash and Grep
@@ -579,16 +561,55 @@ mod tests {
     }
 
     fn git_repo() -> tempfile::TempDir {
+        // A `.git` directory is all the check looks for; git itself is never run.
         let dir = tempfile::tempdir().unwrap();
-        let ok = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(dir.path())
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok);
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
         std::fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn an_embedded_bare_repo_runs_nothing() {
+        // SEC-002: `evil/` is a bare repository whose config would make git run a command.
+        let repo = git_repo();
+        let marker = repo.path().join("MARKER");
+        let evil = repo.path().join("evil");
+        for d in ["objects", "refs/heads"] {
+            std::fs::create_dir_all(evil.join(d)).unwrap();
+        }
+        std::fs::write(evil.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            evil.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ..\n\tfsmonitor = \"touch {}; false\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let c = ctx(repo.path().to_path_buf());
+        for path in ["evil/.env", "evil/notes.txt"] {
+            pre_check(
+                &c,
+                "Write",
+                json!({ "file_path": path, "content": format!("GITHUB_TOKEN={}", ghp()) }),
+                None,
+            );
+        }
+        assert!(!marker.exists(), "the hook ran the repository's command");
+    }
+
+    #[test]
+    fn secrets_never_start_a_process() {
+        let needle = concat!("Command", "::new");
+        for (name, src) in [
+            ("secrets.rs", include_str!("secrets.rs")),
+            ("ignore.rs", include_str!("secrets/ignore.rs")),
+            ("store.rs", include_str!("secrets/store.rs")),
+            ("keys.rs", include_str!("secrets/keys.rs")),
+            ("decode.rs", include_str!("secrets/decode.rs")),
+        ] {
+            assert!(!src.contains(needle), "{name} starts a process ({needle})");
+        }
     }
 
     #[test]
