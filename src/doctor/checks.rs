@@ -13,6 +13,7 @@ use super::files::{Server, State, strings_at};
 use super::secret::{self, Secret};
 use super::{Env, Fix, Item, git, item};
 use crate::audit::clip;
+use crate::hardened;
 use crate::level::Level;
 
 /// A check: id, the sentence shown when it passes, and the function.
@@ -57,6 +58,32 @@ pub const CHECKS: &[Check] = &[
         d26,
     ),
     ("D27", "Global git config has clone protections on.", d27),
+];
+
+/// A hardened-mode check: like [`Check`], but it also reads the managed settings, guard binary
+/// and policy folder at the given [`hardened::Paths`] (`Paths::system()` on a real machine).
+pub type HardenedCheck = (
+    &'static str,
+    &'static str,
+    fn(&hardened::Paths, &Env, &State, &mut Vec<Item>),
+);
+
+/// The hardened-mode checks, in report order. `check` in doctor.rs runs them after [`CHECKS`]
+/// once `Env` carries the hardened paths.
+#[allow(dead_code)]
+pub const HARDENED_CHECKS: &[HardenedCheck] = &[
+    (
+        "D30",
+        "Hardened mode is on: hooks and policy are in root-owned managed settings.",
+        d30_at,
+    ),
+    ("D31", "The sandbox is on in the settings that win.", d31_at),
+    ("D32", "No setting opens a hole in the sandbox.", d32_at),
+    (
+        "D33",
+        "The guard binary and policy folder are root's and only root can change them.",
+        d33_at,
+    ),
 ];
 
 /// Where a server is configured, for messages: `server "github" in ~/.claude.json`.
@@ -1035,9 +1062,93 @@ fn d27(env: &Env, _s: &State, out: &mut Vec<Item>) {
     }
 }
 
+const HARDEN: &str = "sudo guard install --hardened";
+
+fn d30_at(paths: &hardened::Paths, env: &Env, _: &State, out: &mut Vec<Item>) {
+    if !hardened::installed(paths) {
+        out.push(item(
+            env,
+            "D30",
+            Level::Yellow,
+            "Only the light mode is on: an agent running as you can still turn the hooks off or pause them.",
+            Fix::Advice(HARDEN.into()),
+        ));
+    }
+}
+
+/// Managed settings win over every other file, so their value counts first.
+fn d31_at(paths: &hardened::Paths, env: &Env, s: &State, out: &mut Vec<Item>) {
+    let managed = hardened::read_json(&paths.managed_settings);
+    let enabled = managed
+        .as_ref()
+        .and_then(|m| m.pointer("/sandbox/enabled"))
+        .or_else(|| s.effective("/sandbox/enabled"));
+    if !truthy(enabled) {
+        out.push(item(
+            env,
+            "D31",
+            Level::Red,
+            "The sandbox is off, so any command Claude runs can read your keys and change your settings.",
+            Fix::Advice(HARDEN.into()),
+        ));
+    }
+}
+
+fn d32_at(paths: &hardened::Paths, env: &Env, s: &State, out: &mut Vec<Item>) {
+    let managed =
+        hardened::read_json(&paths.managed_settings).map(|v| (paths.managed_settings.clone(), v));
+    for (p, v) in s.settings.iter().chain(managed.iter()) {
+        for d in hardened::dangers(v) {
+            out.push(item(
+                env,
+                "D32",
+                Level::Red,
+                format!("{} sets {d}.", env.tilde(p)),
+                Fix::Advice(format!("remove it from {}", env.tilde(p))),
+            ));
+        }
+    }
+}
+
+fn d33_at(paths: &hardened::Paths, env: &Env, _: &State, out: &mut Vec<Item>) {
+    let Some(managed) = hardened::read_json(&paths.managed_settings) else {
+        return;
+    };
+    let mut check = |p: &Path, what: &str| {
+        if !p.exists() {
+            out.push(item(
+                env,
+                "D33",
+                Level::Red,
+                format!("The {what} {} is missing.", p.display()),
+                Fix::Advice(HARDEN.into()),
+            ));
+        } else if let Some(bad) = hardened::unsafe_ancestor(p) {
+            out.push(item(
+                env,
+                "D33",
+                Level::Red,
+                format!(
+                    "The {what} {} can be changed without root ({} is not root's alone), so an agent could replace it.",
+                    p.display(),
+                    bad.display()
+                ),
+                Fix::Advice(HARDEN.into()),
+            ));
+        }
+    };
+    for bin in hardened::guard_hook_binaries(&managed) {
+        check(&bin, "guard binary the managed hooks run");
+    }
+    if paths.policy_dir.exists() {
+        check(&paths.policy_dir, "policy folder");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn npm_specs() {
@@ -1128,5 +1239,137 @@ mod tests {
         assert!(d02_scans("apps/web/.env"));
         assert!(d02_scans(".claude/settings.local.json"));
         assert!(!d02_scans("src/settings.json"));
+    }
+
+    fn hardened_env(dir: &Path) -> (Env, hardened::Paths) {
+        let env = Env {
+            home: dir.join("home"),
+            guard_home: dir.join("guard"),
+            cwd: dir.join("project"),
+            desktop_config: dir.join("desktop.json"),
+            config: crate::config::Config::default(),
+            vars: Default::default(),
+            claude_version: None,
+            git_version: None,
+            npm_version: |_| None,
+            now: 0,
+        };
+        let paths = hardened::Paths {
+            managed_settings: dir.join("ClaudeCode/managed-settings.json"),
+            binary: dir.join("libexec/agent-guard/guard"),
+            policy_dir: dir.join("AgentGuard"),
+        };
+        (env, paths)
+    }
+
+    fn no_settings() -> State {
+        State {
+            settings: Vec::new(),
+            claude_json: None,
+            servers: Vec::new(),
+        }
+    }
+
+    fn write_managed(paths: &hardened::Paths, v: &Value) {
+        fs::create_dir_all(paths.managed_settings.parent().unwrap()).unwrap();
+        fs::write(&paths.managed_settings, v.to_string()).unwrap();
+    }
+
+    type CheckAt = fn(&hardened::Paths, &Env, &State, &mut Vec<Item>);
+
+    fn run_at(f: CheckAt, paths: &hardened::Paths, env: &Env, s: &State) -> Vec<Item> {
+        let mut out = Vec::new();
+        f(paths, env, s, &mut out);
+        out
+    }
+
+    #[test]
+    fn d30_hardened_mode_missing_is_yellow() {
+        let dir = tempfile::tempdir().unwrap();
+        let (env, paths) = hardened_env(dir.path());
+        let items = run_at(d30_at, &paths, &env, &no_settings());
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].level, Level::Yellow);
+        assert!(items[0].line().contains("sudo guard install --hardened"));
+
+        write_managed(&paths, &hardened::managed_settings(&paths, &[]));
+        assert!(run_at(d30_at, &paths, &env, &no_settings()).is_empty());
+    }
+
+    #[test]
+    fn d31_sandbox_off_is_red_and_managed_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let (env, paths) = hardened_env(dir.path());
+        let user = |v: Value| State {
+            settings: vec![(env.user_settings(), v)],
+            ..no_settings()
+        };
+        let items = run_at(d31_at, &paths, &env, &no_settings());
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].level, Level::Red);
+        let on = user(json!({"sandbox": {"enabled": true}}));
+        assert!(run_at(d31_at, &paths, &env, &on).is_empty());
+
+        // Managed settings turn it off for everyone, whatever the user file says.
+        write_managed(&paths, &json!({"sandbox": {"enabled": false}}));
+        assert_eq!(run_at(d31_at, &paths, &env, &on).len(), 1);
+        write_managed(&paths, &hardened::managed_settings(&paths, &[]));
+        let off = user(json!({"sandbox": {"enabled": false}}));
+        assert!(run_at(d31_at, &paths, &env, &off).is_empty());
+    }
+
+    #[test]
+    fn d32_holes_in_the_sandbox_are_red() {
+        let dir = tempfile::tempdir().unwrap();
+        let (env, paths) = hardened_env(dir.path());
+        let s = State {
+            settings: vec![(
+                env.user_settings(),
+                json!({"sandbox": {
+                    "allowAppleEvents": true,
+                    "excludedCommands": ["docker *", "git push *"],
+                }}),
+            )],
+            ..no_settings()
+        };
+        write_managed(
+            &paths,
+            &json!({"sandbox": {
+                "allowUnsandboxedCommands": true,
+                "network": {"allowedDomains": ["*", "pypi.org"]},
+            }}),
+        );
+        let items = run_at(d32_at, &paths, &env, &s);
+        assert_eq!(items.len(), 4, "{items:#?}");
+        assert!(items.iter().all(|i| i.level == Level::Red));
+        assert!(items[0].message.starts_with("~/.claude/settings.json sets"));
+        assert!(items.iter().any(|i| i.message.contains("\"*\"")));
+
+        write_managed(&paths, &hardened::managed_settings(&paths, &[]));
+        assert!(run_at(d32_at, &paths, &env, &no_settings()).is_empty());
+    }
+
+    #[test]
+    fn d33_binary_the_user_can_change_is_red() {
+        let dir = tempfile::tempdir().unwrap();
+        let (env, paths) = hardened_env(dir.path());
+        // No managed settings: nothing to check.
+        assert!(run_at(d33_at, &paths, &env, &no_settings()).is_empty());
+
+        // Managed hooks pointing at a missing binary.
+        write_managed(&paths, &hardened::managed_settings(&paths, &[]));
+        let items = run_at(d33_at, &paths, &env, &no_settings());
+        assert_eq!(items.len(), 1);
+        assert!(items[0].message.contains("missing"));
+
+        // A binary in a folder the user owns, and a user-owned policy folder.
+        fs::create_dir_all(paths.binary.parent().unwrap()).unwrap();
+        fs::write(&paths.binary, "x").unwrap();
+        fs::create_dir_all(&paths.policy_dir).unwrap();
+        let items = run_at(d33_at, &paths, &env, &no_settings());
+        assert_eq!(items.len(), 2, "{items:#?}");
+        assert!(items.iter().all(|i| i.level == Level::Red));
+        assert!(items[0].message.contains("without root"));
+        // A root-owned chain passes: see hardened::tests::ownership_chain.
     }
 }
