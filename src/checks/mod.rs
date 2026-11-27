@@ -112,6 +112,10 @@ pub fn all_rules() -> Vec<(&'static str, &'static str)> {
         git::RULES,
         net::RULES,
         session::RULES,
+        crate::proxy::RULES,
+        crate::proxy::net::RULES,
+        crate::scan::RULES,
+        crate::doctor::RULES,
     ]
     .concat()
 }
