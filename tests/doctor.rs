@@ -32,6 +32,11 @@ fn setup() -> (TempDir, Env) {
         git_version: Some("git version 2.50.1".into()),
         npm_version: |_| Some("1.2.3".into()),
         now: 1_700_000_000,
+        hardened: agent_guard::hardened::Paths {
+            managed_settings: tmp.path().join("managed/managed-settings.json"),
+            binary: tmp.path().join("managed/guard"),
+            policy_dir: tmp.path().join("managed/policy"),
+        },
         home,
         cwd,
     };
@@ -86,14 +91,16 @@ fn a_safe_setup_is_all_green() {
             "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}}}),
     );
     let items = doctor::check(&env);
+    // D30 (hardened mode not installed) needs root to clear, so it stays yellow here.
     let bad: Vec<String> = items
         .iter()
-        .filter(|i| i.level != Level::Green)
+        .filter(|i| i.level != Level::Green && i.id != "D30")
         .map(Item::line)
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");
     let report = doctor::render(&items);
-    assert!(report.starts_with("green\n"));
+    // Only D30 is yellow, so the report has one yellow group ahead of the greens.
+    assert!(report.starts_with("yellow\n  [D30] "), "{report}");
     assert!(report.contains("  [D08] "));
 }
 

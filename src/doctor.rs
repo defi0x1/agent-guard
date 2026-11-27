@@ -39,6 +39,8 @@ pub struct Env {
     pub npm_version: fn(&str) -> Option<String>,
     /// Unix seconds, for the backup name.
     pub now: u64,
+    /// Where hardened mode keeps its root-owned files.
+    pub hardened: crate::hardened::Paths,
 }
 
 impl Env {
@@ -62,6 +64,7 @@ impl Env {
             git_version: output("git", &["--version"]),
             npm_version: |pkg| output("npm", &["view", pkg, "version"]),
             now: home::now(),
+            hardened: crate::hardened::Paths::system(),
             home,
         })
     }
@@ -267,6 +270,22 @@ pub const RULES: &[(&str, &str)] = &[
         "doctor.d27",
         "Global git clone protections are off; guard doctor --fix D27 sets them.",
     ),
+    (
+        "doctor.d30",
+        "Only the light mode is on, so an agent running as you could turn the hooks off; sudo guard install --hardened locks them.",
+    ),
+    (
+        "doctor.d31",
+        "Hardened mode is installed but the sandbox is off, so commands can read your keys; reinstall with sudo guard install --hardened.",
+    ),
+    (
+        "doctor.d32",
+        "A sandbox setting opens a hole (allowAppleEvents, excludedCommands like docker *, allowUnsandboxedCommands, very broad allowedDomains); remove it.",
+    ),
+    (
+        "doctor.d33",
+        "The guard program or policy folder the managed hooks use can be changed without root; reinstall with sudo guard install --hardened.",
+    ),
 ];
 
 /// Runs every check. A passing check gets one green line.
@@ -276,6 +295,19 @@ pub fn check(env: &Env) -> Vec<Item> {
     for (id, ok, f) in checks::CHECKS {
         let mut items = Vec::new();
         f(env, &s, &mut items);
+        if items.is_empty() {
+            items.push(Item {
+                id,
+                level: Level::Green,
+                message: (*ok).to_string(),
+                fix: Fix::None,
+            });
+        }
+        out.extend(items);
+    }
+    for (id, ok, f) in checks::HARDENED_CHECKS {
+        let mut items = Vec::new();
+        f(&env.hardened, env, &s, &mut items);
         if items.is_empty() {
             items.push(Item {
                 id,
@@ -392,6 +424,11 @@ mod tests {
             git_version: None,
             npm_version: |_| None,
             now: 1_700_000_000,
+            hardened: crate::hardened::Paths {
+                managed_settings: tmp.join("managed/managed-settings.json"),
+                binary: tmp.join("managed/guard"),
+                policy_dir: tmp.join("managed/policy"),
+            },
             home,
             cwd,
         }

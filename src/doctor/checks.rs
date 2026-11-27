@@ -70,7 +70,6 @@ pub type HardenedCheck = (
 
 /// The hardened-mode checks, in report order. `check` in doctor.rs runs them after [`CHECKS`]
 /// once `Env` carries the hardened paths.
-#[allow(dead_code)]
 pub const HARDENED_CHECKS: &[HardenedCheck] = &[
     (
         "D30",
@@ -1078,10 +1077,12 @@ fn d30_at(paths: &hardened::Paths, env: &Env, _: &State, out: &mut Vec<Item>) {
 
 /// Managed settings win over every other file, so their value counts first.
 fn d31_at(paths: &hardened::Paths, env: &Env, s: &State, out: &mut Vec<Item>) {
-    let managed = hardened::read_json(&paths.managed_settings);
+    // Without managed settings, D10 covers the sandbox for the light mode.
+    let Some(managed) = hardened::read_json(&paths.managed_settings) else {
+        return;
+    };
     let enabled = managed
-        .as_ref()
-        .and_then(|m| m.pointer("/sandbox/enabled"))
+        .pointer("/sandbox/enabled")
         .or_else(|| s.effective("/sandbox/enabled"));
     if !truthy(enabled) {
         out.push(item(
@@ -1253,12 +1254,13 @@ mod tests {
             git_version: None,
             npm_version: |_| None,
             now: 0,
+            hardened: hardened::Paths {
+                managed_settings: dir.join("ClaudeCode/managed-settings.json"),
+                binary: dir.join("libexec/agent-guard/guard"),
+                policy_dir: dir.join("AgentGuard"),
+            },
         };
-        let paths = hardened::Paths {
-            managed_settings: dir.join("ClaudeCode/managed-settings.json"),
-            binary: dir.join("libexec/agent-guard/guard"),
-            policy_dir: dir.join("AgentGuard"),
-        };
+        let paths = env.hardened.clone();
         (env, paths)
     }
 
@@ -1297,22 +1299,22 @@ mod tests {
     }
 
     #[test]
-    fn d31_sandbox_off_is_red_and_managed_wins() {
+    fn d31_sandbox_off_in_hardened_mode_is_red_and_managed_wins() {
         let dir = tempfile::tempdir().unwrap();
         let (env, paths) = hardened_env(dir.path());
         let user = |v: Value| State {
             settings: vec![(env.user_settings(), v)],
             ..no_settings()
         };
-        let items = run_at(d31_at, &paths, &env, &no_settings());
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].level, Level::Red);
+        // Without hardened mode, D10 reports the sandbox instead.
+        assert!(run_at(d31_at, &paths, &env, &no_settings()).is_empty());
         let on = user(json!({"sandbox": {"enabled": true}}));
-        assert!(run_at(d31_at, &paths, &env, &on).is_empty());
 
         // Managed settings turn it off for everyone, whatever the user file says.
         write_managed(&paths, &json!({"sandbox": {"enabled": false}}));
-        assert_eq!(run_at(d31_at, &paths, &env, &on).len(), 1);
+        let items = run_at(d31_at, &paths, &env, &on);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].level, Level::Red);
         write_managed(&paths, &hardened::managed_settings(&paths, &[]));
         let off = user(json!({"sandbox": {"enabled": false}}));
         assert!(run_at(d31_at, &paths, &env, &off).is_empty());
