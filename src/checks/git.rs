@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::audit::clip;
 use crate::checks::secrets::redact;
-use crate::checks::{Ctx, ToolCall};
+use crate::checks::{Ctx, ToolCall, shell};
 use crate::config::Preset;
 use crate::home;
 use crate::level::{Finding, Level, Verdict};
@@ -114,11 +114,12 @@ struct GitCall {
 fn invocations(cmd: &str, cwd: &Path) -> Vec<GitCall> {
     let mut dir = cwd.to_path_buf();
     let mut out = Vec::new();
-    for seg in segments(cmd) {
+    for seg in shell::pipelines(cmd).into_iter().flatten() {
         let mut words = seg
+            .args
             .iter()
             .map(String::as_str)
-            .skip_while(|w| is_assignment(w));
+            .skip_while(|w| shell::is_assignment(w));
         let Some(first) = words.next() else {
             continue;
         };
@@ -156,69 +157,6 @@ fn invocations(cmd: &str, cwd: &Path) -> Vec<GitCall> {
         }
     }
     out
-}
-
-/// Splits a shell command into simple commands (on `;`, `&`, `|`, newlines and parentheses),
-/// each a list of words with quotes removed. Best effort: no expansions.
-fn segments(cmd: &str) -> Vec<Vec<String>> {
-    let mut segs = Vec::new();
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
-    let mut quote: Option<char> = None;
-    let mut chars = cmd.chars();
-    while let Some(c) = chars.next() {
-        if let Some(q) = quote {
-            if c == q {
-                quote = None;
-            } else if q == '"' && c == '\\' {
-                word.extend(chars.next());
-            } else {
-                word.push(c);
-            }
-            continue;
-        }
-        match c {
-            '\'' | '"' => {
-                quote = Some(c);
-                in_word = true;
-            }
-            '\\' => {
-                if let Some(n) = chars.next().filter(|n| *n != '\n') {
-                    word.push(n);
-                    in_word = true;
-                }
-            }
-            ' ' | '\t' | ';' | '&' | '|' | '\n' | '(' | ')' => {
-                if in_word {
-                    words.push(std::mem::take(&mut word));
-                    in_word = false;
-                }
-                if c != ' ' && c != '\t' && !words.is_empty() {
-                    segs.push(std::mem::take(&mut words));
-                }
-            }
-            _ => {
-                word.push(c);
-                in_word = true;
-            }
-        }
-    }
-    if in_word {
-        words.push(word);
-    }
-    if !words.is_empty() {
-        segs.push(words);
-    }
-    segs
-}
-
-/// `NAME=value`, as in `GIT_TRACE=1 git status`.
-fn is_assignment(w: &str) -> bool {
-    w.split_once('=').is_some_and(|(name, _)| {
-        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
 }
 
 /// `p` relative to `base`, with `~` expanded and `.`/`..` removed lexically.

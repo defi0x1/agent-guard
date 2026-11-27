@@ -9,6 +9,7 @@ pub mod paths;
 pub mod sanitize;
 pub mod secrets;
 pub mod session;
+pub mod shell;
 
 use std::path::PathBuf;
 

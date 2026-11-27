@@ -16,6 +16,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use crate::checks::shell::{self, Redirect};
 use crate::checks::{Ctx, ToolCall};
 use crate::config::Preset;
 use crate::level::{Finding, Level, Verdict};
@@ -524,211 +525,6 @@ fn path_like(s: &str) -> bool {
 // ---------------------------------------------------------------------------------------------
 // Bash
 
-/// How a shell word is used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Arg,
-    /// Target of `>`, `>>`, `&>`.
-    Out,
-    /// Source of `<`.
-    In,
-    /// Delimiter of a `<<` heredoc.
-    Heredoc,
-    /// A `<<<` here-string.
-    Ignore,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Word {
-    text: String,
-    kind: Kind,
-}
-
-/// Splits a command into simple commands, each a list of words.
-#[derive(Default)]
-struct Lexer {
-    segs: Vec<Vec<Word>>,
-    words: Vec<Word>,
-    cur: String,
-    started: bool,
-    kind: Option<Kind>,
-    heredocs: Vec<String>,
-}
-
-impl Lexer {
-    fn word(&mut self) {
-        if !self.started && self.cur.is_empty() {
-            return;
-        }
-        let text = std::mem::take(&mut self.cur);
-        self.started = false;
-        match self.kind.take().unwrap_or(Kind::Arg) {
-            Kind::Heredoc => self.heredocs.push(text),
-            Kind::Ignore => {}
-            kind => self.words.push(Word { text, kind }),
-        }
-    }
-
-    fn seg(&mut self) {
-        self.word();
-        self.kind = None;
-        if !self.words.is_empty() {
-            self.segs.push(std::mem::take(&mut self.words));
-        }
-    }
-
-    /// Ends the current word, dropping it if it is a file descriptor number (`2>`).
-    fn redirect(&mut self, kind: Kind) {
-        if !self.cur.is_empty() && self.cur.bytes().all(|b| b.is_ascii_digit()) {
-            self.cur.clear();
-            self.started = false;
-        }
-        self.word();
-        self.kind = Some(kind);
-    }
-}
-
-fn segments(cmd: &str) -> Vec<Vec<Word>> {
-    let s: Vec<char> = cmd.chars().collect();
-    let at = |i: usize| s.get(i).copied();
-    let mut lx = Lexer::default();
-    let mut i = 0;
-    while let Some(c) = at(i) {
-        match c {
-            ' ' | '\t' | '\r' => lx.word(),
-            '\n' => {
-                lx.seg();
-                // Skip heredoc bodies: they are data, not commands.
-                for delim in std::mem::take(&mut lx.heredocs) {
-                    loop {
-                        let start = i + 1;
-                        let end = (start..s.len()).find(|&j| s[j] == '\n').unwrap_or(s.len());
-                        let line: String = s[start.min(end)..end].iter().collect();
-                        i = end;
-                        if end >= s.len() || line.trim() == delim {
-                            break;
-                        }
-                    }
-                }
-            }
-            ';' | '|' | '(' | ')' | '`' => lx.seg(),
-            '&' if at(i + 1) == Some('>') => {
-                i += 1;
-                if at(i + 1) == Some('>') {
-                    i += 1;
-                }
-                lx.redirect(Kind::Out);
-            }
-            '&' => lx.seg(),
-            '$' if at(i + 1) == Some('(') => {
-                i += 1;
-                lx.seg();
-            }
-            '>' => {
-                if matches!(at(i + 1), Some('>' | '|' | '&')) {
-                    i += 1;
-                }
-                lx.redirect(Kind::Out);
-            }
-            '<' => match (at(i + 1), at(i + 2)) {
-                (Some('<'), Some('<')) => {
-                    i += 2;
-                    lx.redirect(Kind::Ignore);
-                }
-                (Some('<'), next) => {
-                    i += if next == Some('-') { 2 } else { 1 };
-                    lx.redirect(Kind::Heredoc);
-                }
-                (Some('('), _) => {
-                    i += 1;
-                    lx.seg();
-                }
-                _ => lx.redirect(Kind::In),
-            },
-            '#' if !lx.started && lx.cur.is_empty() => {
-                while at(i + 1).is_some_and(|d| d != '\n') {
-                    i += 1;
-                }
-            }
-            '\'' => {
-                lx.started = true;
-                i += 1;
-                while let Some(d) = at(i).filter(|&d| d != '\'') {
-                    lx.cur.push(d);
-                    i += 1;
-                }
-            }
-            '"' => {
-                lx.started = true;
-                i += 1;
-                while let Some(d) = at(i).filter(|&d| d != '"') {
-                    match (d, at(i + 1)) {
-                        ('\\', Some('\n')) => i += 1,
-                        ('\\', Some(e @ ('"' | '\\' | '$' | '`'))) => {
-                            lx.cur.push(e);
-                            i += 1;
-                        }
-                        _ => lx.cur.push(d),
-                    }
-                    i += 1;
-                }
-            }
-            '\\' => {
-                if let Some(d) = at(i + 1) {
-                    if d != '\n' {
-                        lx.cur.push(d);
-                    }
-                    i += 1;
-                }
-            }
-            _ => lx.cur.push(c),
-        }
-        i += 1;
-    }
-    lx.seg();
-    lx.segs
-}
-
-/// Wrappers and shell keywords that run the next word as the command.
-const WRAPPERS: &[&str] = &[
-    "sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "then", "do",
-    "else", "elif", "if", "while", "until", "!", "{",
-];
-
-/// Wrapper flags that take a value (`sudo -u root`, `nice -n 5`, `env -u NAME`).
-const WRAPPER_VALUE_FLAGS: &[&str] = &["-u", "-g", "-n", "-C", "-p", "-U", "-D"];
-
-/// Drops leading `NAME=value` assignments and wrappers, returning the real command and its args.
-fn command<'a>(mut args: &'a [&'a str]) -> &'a [&'a str] {
-    while let Some((first, rest)) = args.split_first() {
-        let assignment = first.split_once('=').is_some_and(|(k, _)| {
-            !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        });
-        if assignment {
-            args = rest;
-        } else if WRAPPERS.contains(&basename(first)) {
-            args = rest;
-            while let Some((flag, more)) = args.split_first() {
-                if !flag.starts_with('-') {
-                    break;
-                }
-                args = if WRAPPER_VALUE_FLAGS.contains(flag) {
-                    more.get(1..).unwrap_or(&[])
-                } else {
-                    more
-                };
-            }
-        } else {
-            break;
-        }
-    }
-    args
-}
-
-fn basename(s: &str) -> &str {
-    s.rsplit('/').next().unwrap_or(s)
-}
-
 /// Positional arguments: everything that is not a flag, skipping the values of `value_flags`.
 fn positional<'a>(args: &[&'a str], value_flags: &[&str]) -> Vec<&'a str> {
     let mut out = Vec::new();
@@ -802,25 +598,19 @@ const MAX_DEPTH: u8 = 3;
 
 fn bash(cmd: &str, user: &Path, cwd: &Path, depth: u8, hits: &mut Vec<Hit>) {
     let mut cwd = cwd.to_path_buf();
-    for seg in segments(cmd) {
-        for w in &seg {
-            match w.kind {
-                Kind::Out if !w.text.bytes().all(|b| b.is_ascii_digit()) && w.text != "-" => {
-                    add(hits, Op::Write, &w.text, user, &cwd)
-                }
-                Kind::In => add(hits, Op::Read, &w.text, user, &cwd),
-                _ => {}
-            }
+    for c in shell::pipelines(cmd).into_iter().flatten() {
+        for (r, target) in &c.redirects {
+            let op = match r {
+                Redirect::Out => Op::Write,
+                Redirect::In => Op::Read,
+            };
+            add(hits, op, target, user, &cwd);
         }
-        let words: Vec<&str> = seg
-            .iter()
-            .filter(|w| w.kind == Kind::Arg)
-            .map(|w| w.text.as_str())
-            .collect();
-        let Some((first, args)) = command(&words).split_first() else {
+        let words: Vec<&str> = c.args.iter().map(String::as_str).collect();
+        let Some((first, args)) = shell::command(&words).split_first() else {
             continue;
         };
-        let name = basename(first);
+        let name = shell::basename(first);
         match name {
             "cd" => {
                 let to = positional(args, &[]).first().copied().unwrap_or("~");
@@ -1420,19 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn lexer_splits_and_tags_words() {
-        let segs = segments("a 'b c' \"d\\\"e\" 2>/dev/null x>>out <in && f|g; h\\ i");
-        let text = |s: &[Word]| s.iter().map(|w| w.text.clone()).collect::<Vec<_>>();
-        assert_eq!(
-            text(&segs[0]),
-            ["a", "b c", "d\"e", "/dev/null", "x", "out", "in"]
-        );
-        assert_eq!(segs[0][3].kind, Kind::Out);
-        assert_eq!(segs[0][5].kind, Kind::Out);
-        assert_eq!(segs[0][6].kind, Kind::In);
-        assert_eq!(text(&segs[1]), ["f"]);
-        assert_eq!(text(&segs[2]), ["g"]);
-        assert_eq!(text(&segs[3]), ["h i"]);
+    fn wildcard_matches_names() {
         assert!(wildcard("id_*", "id_rsa") && !wildcard("*.pub", "id_rsa"));
     }
 }

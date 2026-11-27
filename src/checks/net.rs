@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::checks::shell::{self, Command as Cmd};
 use crate::checks::{Ctx, ToolCall, dest};
 use crate::config::{Config, Preset, TrustedHost, host_matches};
 use crate::home;
@@ -496,255 +497,21 @@ fn dev_tcp_targets(command: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// A small shell parser: enough to split a command line into pipelines of simple commands.
+// Commands
 // ---------------------------------------------------------------------------------------------
 
-enum Tok {
-    Word(String),
-    /// `;`, `&&`, `||`, `&`, newline, `(` and `)`: the end of a pipeline.
-    Sep,
-    Pipe,
-    /// `<`, `<<`, `<<<`: the command's input comes from somewhere.
-    RedirIn,
-    /// `>`, `>>`, `2>&1`...
-    RedirOut,
-}
-
-/// One simple command: its words with quotes removed, and whether its input is piped or
-/// redirected.
-#[derive(Debug, Default)]
-struct Cmd {
-    args: Vec<String>,
-    stdin: bool,
-}
-
-/// Splits `text` into pipelines. Command substitutions (`$(...)`, backticks, `<(...)`) stay in
-/// their word and are also parsed as pipelines of their own.
+/// The pipelines in `text`. Heredoc bodies are parsed too, since they may be fed to a shell.
 fn parse(text: &str) -> Vec<Vec<Cmd>> {
-    let mut subs = Vec::new();
-    let toks = tokenize(text, &mut subs);
-    let mut out: Vec<Vec<Cmd>> = Vec::new();
-    let mut pipeline: Vec<Cmd> = Vec::new();
-    let mut cmd = Cmd::default();
-    let mut redirect_target = false;
-    for t in toks {
-        match t {
-            Tok::Word(w) => {
-                if redirect_target {
-                    redirect_target = false;
-                } else {
-                    cmd.args.push(w);
-                }
-            }
-            Tok::RedirIn => {
-                cmd.stdin = true;
-                redirect_target = true;
-            }
-            Tok::RedirOut => redirect_target = true,
-            Tok::Pipe => {
-                pipeline.push(std::mem::take(&mut cmd));
-                cmd.stdin = true;
-            }
-            Tok::Sep => {
-                redirect_target = false;
-                pipeline.push(std::mem::take(&mut cmd));
-                out.push(std::mem::take(&mut pipeline));
-            }
-        }
-    }
-    pipeline.push(cmd);
-    out.push(pipeline);
-    for p in &mut out {
-        p.retain(|c| !c.args.is_empty());
-    }
-    out.retain(|p| !p.is_empty());
-    for s in subs {
-        out.extend(parse(&s));
+    let mut out = shell::pipelines(text);
+    let bodies: Vec<String> = out
+        .iter()
+        .flatten()
+        .flat_map(|c| c.heredocs.clone())
+        .collect();
+    for b in bodies {
+        out.extend(parse(&b));
     }
     out
-}
-
-fn tokenize(text: &str, subs: &mut Vec<String>) -> Vec<Tok> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut toks = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
-    let mut i = 0;
-    let flush = |toks: &mut Vec<Tok>, word: &mut String, in_word: &mut bool| {
-        if *in_word {
-            toks.push(Tok::Word(std::mem::take(word)));
-            *in_word = false;
-        }
-    };
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        match c {
-            ' ' | '\t' | '\r' => flush(&mut toks, &mut word, &mut in_word),
-            '\n' | ';' | '(' | ')' => {
-                flush(&mut toks, &mut word, &mut in_word);
-                toks.push(Tok::Sep);
-            }
-            '|' => {
-                flush(&mut toks, &mut word, &mut in_word);
-                if next == Some('|') {
-                    i += 1;
-                    toks.push(Tok::Sep);
-                } else {
-                    if next == Some('&') {
-                        i += 1;
-                    }
-                    toks.push(Tok::Pipe);
-                }
-            }
-            '&' if next == Some('>') => {
-                flush(&mut toks, &mut word, &mut in_word);
-                i += 1;
-                while matches!(chars.get(i + 1), Some('>')) {
-                    i += 1;
-                }
-                toks.push(Tok::RedirOut);
-            }
-            '&' => {
-                flush(&mut toks, &mut word, &mut in_word);
-                if next == Some('&') {
-                    i += 1;
-                }
-                toks.push(Tok::Sep);
-            }
-            '<' | '>' if next == Some('(') => {
-                in_word = true;
-                i = substitution(&chars, i + 2, c, &mut word, subs);
-            }
-            '<' | '>' => {
-                // A file descriptor number before the operator belongs to it (`2>`).
-                if in_word && word.bytes().all(|b| b.is_ascii_digit()) {
-                    word.clear();
-                    in_word = false;
-                }
-                flush(&mut toks, &mut word, &mut in_word);
-                while matches!(chars.get(i + 1), Some('<' | '>' | '&' | '|')) {
-                    i += 1;
-                }
-                toks.push(if c == '<' {
-                    Tok::RedirIn
-                } else {
-                    Tok::RedirOut
-                });
-            }
-            '\'' => {
-                in_word = true;
-                i += 1;
-                while i < chars.len() && chars[i] != '\'' {
-                    word.push(chars[i]);
-                    i += 1;
-                }
-            }
-            '"' => {
-                in_word = true;
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    match chars[i] {
-                        '\\' if i + 1 < chars.len() => {
-                            i += 1;
-                            word.push(chars[i]);
-                        }
-                        '$' if chars.get(i + 1) == Some(&'(') => {
-                            i = substitution(&chars, i + 2, '$', &mut word, subs);
-                        }
-                        '`' => i = backtick(&chars, i + 1, &mut word, subs),
-                        ch => word.push(ch),
-                    }
-                    i += 1;
-                }
-            }
-            '\\' => {
-                if next == Some('\n') {
-                    flush(&mut toks, &mut word, &mut in_word);
-                } else if let Some(n) = next {
-                    word.push(n);
-                    in_word = true;
-                }
-                i += 1;
-            }
-            '$' if next == Some('(') => {
-                in_word = true;
-                i = substitution(&chars, i + 2, '$', &mut word, subs);
-            }
-            '`' => {
-                in_word = true;
-                i = backtick(&chars, i + 1, &mut word, subs);
-            }
-            '#' if !in_word => {
-                while i + 1 < chars.len() && chars[i + 1] != '\n' {
-                    i += 1;
-                }
-            }
-            _ => {
-                word.push(c);
-                in_word = true;
-            }
-        }
-        i += 1;
-    }
-    flush(&mut toks, &mut word, &mut in_word);
-    toks
-}
-
-/// Reads up to the `)` matching an already opened `(`, starting at `start`. Returns the text
-/// inside and the index of the closing parenthesis (or the end).
-fn balanced(chars: &[char], start: usize) -> (String, usize) {
-    let mut depth = 1;
-    let mut quote: Option<char> = None;
-    let mut i = start;
-    while i < chars.len() {
-        let c = chars[i];
-        match (quote, c) {
-            (Some(q), _) if c == q => quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => quote = Some(c),
-            (None, '(') => depth += 1,
-            (None, ')') => {
-                depth -= 1;
-                if depth == 0 {
-                    return (chars[start..i].iter().collect(), i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    (chars[start..].iter().collect(), chars.len())
-}
-
-/// Appends `$(inner)` (or `<(inner)`, after `open`) to `word`, records `inner`, and returns the index of the closing `)`.
-fn substitution(
-    chars: &[char],
-    start: usize,
-    open: char,
-    word: &mut String,
-    subs: &mut Vec<String>,
-) -> usize {
-    let (inner, end) = balanced(chars, start);
-    word.push(open);
-    word.push('(');
-    word.push_str(&inner);
-    word.push(')');
-    subs.push(inner);
-    end
-}
-
-/// Like [`substitution`] for a backtick pair starting after the opening backtick.
-fn backtick(chars: &[char], start: usize, word: &mut String, subs: &mut Vec<String>) -> usize {
-    let end = (start..chars.len())
-        .find(|&i| chars[i] == '`')
-        .unwrap_or(chars.len());
-    let inner: String = chars[start..end].iter().collect();
-    word.push('`');
-    word.push_str(&inner);
-    word.push('`');
-    subs.push(inner);
-    end
 }
 
 /// Options and positional arguments of a command, given which options take a value.
@@ -855,30 +622,8 @@ impl Cmd {
     /// The command name (basename) and its arguments, after `sudo`, `env`, `VAR=value` and
     /// similar wrappers.
     fn words(&self) -> Option<(&str, &[String])> {
-        let mut rest = &self.args[..];
-        loop {
-            let first = rest.first()?;
-            let name = first.rsplit('/').next().unwrap_or(first);
-            if is_assignment(first) {
-                rest = &rest[1..];
-            } else if matches!(name, "sudo" | "doas" | "env") {
-                rest = &rest[1..];
-                while let Some(a) = rest.first() {
-                    if a.starts_with('-') {
-                        let takes_value = matches!(a.as_str(), "-u" | "-g" | "-C" | "-h" | "-p");
-                        rest = rest.get(if takes_value { 2 } else { 1 }..).unwrap_or(&[]);
-                    } else if is_assignment(a) {
-                        rest = &rest[1..];
-                    } else {
-                        break;
-                    }
-                }
-            } else if matches!(name, "command" | "exec" | "nohup" | "time") {
-                rest = &rest[1..];
-            } else {
-                return Some((name, &rest[1..]));
-            }
-        }
+        let (first, rest) = shell::command(&self.args).split_first()?;
+        Some((shell::basename(first), rest))
     }
 
     fn name(&self) -> &str {
@@ -1111,14 +856,6 @@ fn nc_values(name: &str) -> &'static str {
     } else {
         "eciOpPqsTwxX"
     }
-}
-
-fn is_assignment(word: &str) -> bool {
-    word.split_once('=').is_some_and(|(k, _)| {
-        !k.is_empty()
-            && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            && !k.as_bytes()[0].is_ascii_digit()
-    })
 }
 
 /// For an interpreter, the short flags that take code instead of reading a script.
