@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::install::{self, Installed};
 use crate::top::data::{self, Counts};
-use crate::{audit, home, pause};
+use crate::{audit, hardened, home, pause};
 
 /// Where `guard install` keeps the status line it wrapped.
 pub const WRAPPED_FILE: &str = "statusline-wrapped.json";
@@ -26,6 +26,10 @@ enum State {
     On {
         counts: Counts,
         mode: Option<String>,
+        /// Hardened mode (root-owned managed settings) rather than the light mode.
+        hardened: bool,
+        /// Hardened mode with the sandbox turned off.
+        sandbox_off: bool,
     },
 }
 
@@ -53,7 +57,9 @@ pub fn run(wrap: bool) -> anyhow::Result<()> {
 fn state(input: &str) -> anyhow::Result<State> {
     let now = home::now();
     let v: Value = serde_json::from_str(input).unwrap_or(Value::Null);
-    if matches!(install::installed(), Installed::No) {
+    let hp = hardened::Paths::system();
+    let hardened = hardened::installed(&hp);
+    if !hardened && matches!(install::installed(), Installed::No) {
         return Ok(State::NotInstalled);
     }
     if project_dir(&v).is_some_and(|d| hooks_disabled(&d)) {
@@ -68,7 +74,16 @@ fn state(input: &str) -> anyhow::Result<State> {
         .find_map(|k| v[*k].as_str())
         .filter(|m| *m != "default")
         .map(str::to_string);
-    Ok(State::On { counts, mode })
+    let sandbox_off = hardened
+        && hardened::read_json(&hp.managed_settings)
+            .and_then(|m| m.pointer("/sandbox/enabled").cloned())
+            != Some(Value::Bool(true));
+    Ok(State::On {
+        counts,
+        mode,
+        hardened,
+        sandbox_off,
+    })
 }
 
 fn render(s: &State, color: bool) -> String {
@@ -88,9 +103,19 @@ fn render(s: &State, color: bool) -> String {
             "paused, {}m left",
             until.saturating_sub(home::now()) / 60 + 1
         )),
-        State::On { counts, mode } => {
+        State::On {
+            counts,
+            mode,
+            hardened,
+            sandbox_off,
+        } => {
+            let kind = if *hardened {
+                paint("32", "hardened")
+            } else {
+                paint("2", "light")
+            };
             let mut line = format!(
-                "agent guard: {}  {} {} {}",
+                "agent guard: {} {kind}  {} {} {}",
                 paint("1;32", "On"),
                 paint("31", &format!("● {}", counts.red)),
                 paint("33", &format!("● {}", counts.yellow)),
@@ -99,6 +124,9 @@ fn render(s: &State, color: bool) -> String {
             if let Some(m) = mode {
                 let code = if m.contains("bypass") { "1;31" } else { "33" };
                 line.push_str(&format!(" · {}", paint(code, m)));
+            }
+            if *sandbox_off {
+                line.push_str(&format!(" · {}", paint("1;31", "sandbox OFF")));
             }
             line
         }
@@ -164,8 +192,23 @@ mod tests {
                 green: 41,
             },
             mode: Some("auto".into()),
+            hardened: false,
+            sandbox_off: false,
         };
-        assert_eq!(render(&on, false), "agent guard: On  ● 1 ● 2 ● 41 · auto");
+        assert_eq!(
+            render(&on, false),
+            "agent guard: On light  ● 1 ● 2 ● 41 · auto"
+        );
+        let locked = State::On {
+            counts: Counts::default(),
+            mode: None,
+            hardened: true,
+            sandbox_off: true,
+        };
+        assert_eq!(
+            render(&locked, false),
+            "agent guard: On hardened  ● 0 ● 0 ● 0 · sandbox OFF"
+        );
         assert!(render(&State::NotInstalled, false).starts_with("agent guard: Off"));
         assert!(render(&State::OffInProject, false).contains("disableAllHooks"));
         assert!(render(&State::Paused { until: 0 }, false).contains("paused"));
