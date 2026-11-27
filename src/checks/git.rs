@@ -115,11 +115,7 @@ fn invocations(cmd: &str, cwd: &Path) -> Vec<GitCall> {
     let mut dir = cwd.to_path_buf();
     let mut out = Vec::new();
     for seg in shell::pipelines(cmd).into_iter().flatten() {
-        let mut words = seg
-            .args
-            .iter()
-            .map(String::as_str)
-            .skip_while(|w| shell::is_assignment(w));
+        let mut words = shell::command(&seg.args).iter().map(String::as_str);
         let Some(first) = words.next() else {
             continue;
         };
@@ -807,6 +803,23 @@ mod tests {
             Path::new("/x")
         );
         assert!(invocations("echo git commit; gitk --all", cwd).is_empty());
+    }
+
+    #[test]
+    fn sees_git_behind_wrappers() {
+        let f = fixture();
+        append_config(&f, "[core]\n\tfsmonitor = ./x\n");
+        let c = ctx(&f, Config::default());
+        for cmd in [
+            "command git status",
+            "env A=1 git status",
+            "time git status",
+            "sudo -u me git status",
+            "nice -n 5 git status",
+            "if true; then git status; fi",
+        ] {
+            assert_eq!(rules(&run(&c, cmd)), ["git.exec_config"], "{cmd}");
+        }
     }
 
     #[test]
