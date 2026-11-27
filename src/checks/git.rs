@@ -671,7 +671,23 @@ fn git_version(ctx: &Ctx) -> Option<(u32, u32, u32)> {
     let version = match cached {
         Some(c) => c.version,
         None => {
-            let out = Command::new("git").arg("--version").output().ok()?;
+            // `--version` reads no repository config; run it from `/` with hooks and fsmonitor
+            // off anyway, so a repository the agent is in can never come into play.
+            let out = Command::new("git")
+                .args([
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "safe.bareRepository=explicit",
+                    "--version",
+                ])
+                .current_dir("/")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env_remove("GIT_DIR")
+                .output()
+                .ok()?;
             let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let cache = VersionCache {
                 checked_at: ctx.now,
