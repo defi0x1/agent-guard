@@ -77,7 +77,18 @@ pub fn handle(input: &Input) -> anyhow::Result<Option<Value>> {
     let call = input.tool_name.as_deref().map(|tool| ToolCall {
         tool,
         input: input.tool_input.as_ref().unwrap_or(&empty),
-        mcp_server: input.mcp_server.as_ref().and_then(|m| m.name.as_deref()),
+        // ReadMcpResourceTool carries no `mcp_server`; its server is in the input.
+        mcp_server: input
+            .mcp_server
+            .as_ref()
+            .and_then(|m| m.name.as_deref())
+            .or_else(|| {
+                input
+                    .tool_input
+                    .as_ref()
+                    .and_then(|i| i.get("server"))
+                    .and_then(Value::as_str)
+            }),
     });
 
     let mut context = Vec::new();
