@@ -25,7 +25,7 @@ use crate::level::{Finding, Level, Verdict};
 pub const RULES: &[(&str, &str)] = &[
     (
         "git.exec_config",
-        "The repository's git config sets a key that runs a command (a pager, editor, filter, alias or hook path), so any git command here runs it; trust the repo with `guard trust repo`.",
+        "The repository's git config sets a key that runs a command (a pager, editor, filter or alias), so any git command here runs it; trust the repo with `guard trust repo`.",
     ),
     (
         "git.malicious_hook",
@@ -532,11 +532,8 @@ fn config_findings(ctx: &Ctx, repo: &Repo, entries: &[Entry]) -> Vec<Finding> {
             }
         }
     }
-    if let Some((e, value, dir)) = hooks_path(repo, entries) {
-        if dir.starts_with(&repo.root) {
-            flag(&e.key, value);
-        }
-    }
+    // An in-repo `core.hooksPath` (husky and friends) is not flagged here: the hooks in it are
+    // checked like any other repo hook, yellow when plain and red when they look malicious.
     out
 }
 
@@ -941,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn flags_filters_helpers_and_hooks_path_in_repo() {
+    fn flags_filters_and_helpers_but_not_hooks_path() {
         let f = fixture();
         append_config(
             &f,
@@ -949,10 +946,9 @@ mod tests {
         );
         let v = run(&ctx(&f, Config::default()), "git status");
         let msgs: Vec<&str> = v.findings.iter().map(|f| f.message.as_str()).collect();
-        assert_eq!(msgs.len(), 3, "{msgs:?}");
+        assert_eq!(msgs.len(), 2, "{msgs:?}");
         assert!(msgs[0].contains("filter.x.smudge"));
         assert!(msgs[1].contains("credential.https://h.helper"));
-        assert!(msgs[2].contains("core.hooksPath") && msgs[2].contains(".githooks"));
     }
 
     #[test]
