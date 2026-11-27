@@ -370,17 +370,19 @@ pub fn installed(paths: &Paths) -> bool {
 
 /// The first of `path` and its existing ancestors that the user could change: not owned by
 /// root, or writable by group or others. `None` when the whole chain is root's.
+/// A symlink's own mode means nothing, so only its owner counts, and the path it points to is
+/// checked too.
 pub fn unsafe_ancestor(path: &Path) -> Option<PathBuf> {
-    for p in path.ancestors() {
-        let Ok(m) = fs::symlink_metadata(p) else {
-            continue;
-        };
-        let sticky_dir = m.is_dir() && m.mode() & 0o1000 != 0;
-        if m.uid() != 0 || (m.mode() & 0o022 != 0 && !sticky_dir) {
-            return Some(p.to_path_buf());
-        }
-    }
-    None
+    let chain = |path: &Path| {
+        path.ancestors().find_map(|p| {
+            let m = fs::symlink_metadata(p).ok()?;
+            let loose = !m.file_type().is_symlink()
+                && m.mode() & 0o022 != 0
+                && !(m.is_dir() && m.mode() & 0o1000 != 0);
+            (m.uid() != 0 || loose).then(|| p.to_path_buf())
+        })
+    };
+    chain(path).or_else(|| chain(&fs::canonicalize(path).ok()?))
 }
 
 /// Whether the process runs as root (`/usr/bin/id -u` prints 0).
@@ -963,6 +965,12 @@ mod tests {
         assert_eq!(unsafe_ancestor(Path::new("/bin/ls")), None);
         let dir = tempfile::tempdir().unwrap();
         assert!(unsafe_ancestor(dir.path()).is_some());
+        // A symlink to a file the user owns is unsafe through its target.
+        let target = dir.path().join("guard");
+        std::fs::write(&target, "").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(unsafe_ancestor(&link).is_some());
     }
 
     #[test]
