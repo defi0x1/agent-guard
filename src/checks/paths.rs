@@ -579,6 +579,15 @@ fn runs_later(p: &Path, pl: &Places) -> bool {
         {
             return true;
         }
+        // A key added here lets someone log in; `rc` and `config` (ProxyCommand) run code.
+        if rel_names.len() == 2
+            && name_is(rel_names[0], ".ssh")
+            && ["authorized_keys", "authorized_keys2", "rc", "config"]
+                .iter()
+                .any(|n| name_is(name, n))
+        {
+            return true;
+        }
     }
     let git = names
         .windows(2)
@@ -707,7 +716,8 @@ fn credential_rel(names: &[&str], anchored: bool) -> bool {
         return names.len() == 1
             || !(name.ends_with(".pub")
                 || SSH_PUBLIC.contains(&name.as_str())
-                || component(names[1], "config.d", false));
+                // Exact only: a glob such as `*` that could mean `config.d` also means `id_rsa`.
+                || names[1].eq_ignore_ascii_case("config.d"));
     }
     let prefix = |want: &str| {
         names.len() >= want.split('/').count()
@@ -875,6 +885,11 @@ const SECRET_CLIS: &[(&str, &[&str])] = &[
     ("infisical", &["secrets", "get"]),
     ("vault", &["kv", "get"]),
     ("gcloud", &["auth", "print-access-token"]),
+    ("gh", &["auth", "token"]),
+    ("aws", &["secretsmanager", "get-secret-value"]),
+    ("aws", &["sts", "get-session-token"]),
+    ("az", &["account", "get-access-token"]),
+    ("kubectl", &["get", "secret"]),
 ];
 
 /// Agent Guard subcommands only the user may run.
