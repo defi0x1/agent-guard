@@ -258,6 +258,16 @@ impl Checker<'_, '_> {
                 |_| Level::Red,
                 format!("This uploads data to {h}, a paste, webhook or tunnel service often used to steal data.{}", safe_hint(h)),
             );
+        } else if let Some(h) = untrusted.iter().find(|h| is_public_ip(h)) {
+            // A named host can be checked; a bare IP hides who receives the data.
+            self.push(
+                "net.upload_unknown",
+                |_| Level::Red,
+                format!(
+                    "This uploads data to a raw IP address ({h}), which hides who receives it.{}",
+                    safe_hint(h)
+                ),
+            );
         } else {
             let msg = match untrusted.first() {
                 Some(h) => format!(
