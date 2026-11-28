@@ -50,7 +50,7 @@ pub struct Trust {
     /// Repositories (absolute paths) whose git hooks and config the user trusts.
     #[serde(default)]
     pub repos: Vec<String>,
-    /// Hosts the user blocked: calls to them are red, and `guard net-proxy` refuses them.
+    /// Hosts the user blocked: calls to them are red.
     #[serde(default)]
     pub blocked: Vec<String>,
 }

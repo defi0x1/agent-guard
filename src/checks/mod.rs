@@ -207,7 +207,6 @@ pub fn all_rules() -> Vec<(&'static str, &'static str)> {
         net::RULES,
         session::RULES,
         crate::proxy::RULES,
-        crate::proxy::net::RULES,
         crate::scan::RULES,
         crate::doctor::RULES,
         crate::hook::RULES,

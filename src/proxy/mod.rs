@@ -17,8 +17,6 @@
 //! too). Names listed in `AGENT_GUARD_PROXY_ENV` (separated by commas or spaces) are passed anyway.
 //! With `AGENT_GUARD_SANDBOX=1` and `srt` on `PATH`, the server runs as `srt <cmd> <args>`.
 
-pub mod net;
-
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::fs;

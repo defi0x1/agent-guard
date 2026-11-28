@@ -20,10 +20,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Claude Code hook entry point (reads the event as JSON on stdin).
+    #[command(hide = true)]
     Hook,
     /// Live view of every agent's tool calls, processes and connections.
     Top,
     /// One line for Claude Code's status line.
+    #[command(hide = true)]
     Statusline {
         /// Also run the status line `guard install` wrapped, below Agent Guard's line.
         #[arg(long)]
@@ -45,12 +47,7 @@ enum Cmd {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
-    /// Local HTTP(S) proxy that shows and filters the hosts agents connect to.
-    NetProxy {
-        #[arg(long, default_value = "127.0.0.1:8899")]
-        listen: String,
-    },
-    /// Trusted hosts and repositories, blocked hosts, and a review of hosts seen recently.
+    /// Trusted repositories, blocked hosts, and a review of hosts seen recently.
     #[command(subcommand)]
     Trust(TrustCmd),
     /// Keys kept in the OS keychain instead of config files.
@@ -107,7 +104,8 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum TrustCmd {
-    /// Trust a host: `guard trust add api.example.com --ttl 1d`.
+    /// Same as `guard whitelist <host>`, kept for older scripts.
+    #[command(hide = true)]
     Add {
         host: String,
         #[arg(long)]
@@ -118,15 +116,16 @@ enum TrustCmd {
         #[arg(long)]
         ttl: Option<String>,
     },
-    /// Stop trusting a host.
+    /// Same as `guard whitelist --remove <host>`.
+    #[command(hide = true)]
     Rm { host: String },
-    /// List trusted hosts, repositories and blocked hosts.
+    /// List whitelisted hosts, trusted repositories and blocked hosts.
     List,
     /// Trust a repository's git hooks and config (default: the current directory).
     Repo { path: Option<std::path::PathBuf> },
-    /// Block a host: calls to it are red, and the net proxy refuses it.
+    /// Block a host: calls to it are red.
     Block { host: String },
-    /// Review hosts seen recently and trust the ones you recognise.
+    /// Review hosts seen recently and whitelist the ones you recognise.
     Review,
 }
 
@@ -138,7 +137,6 @@ pub fn run() -> anyhow::Result<()> {
         Cmd::Doctor { fix, undo } => doctor::run(fix.as_deref(), undo),
         Cmd::Scan => scan::run(),
         Cmd::Proxy { command } => proxy::run(&command),
-        Cmd::NetProxy { listen } => proxy::net::run(&listen),
         Cmd::Trust(t) => {
             require_root_if_hardened("trust")?;
             trust(t)
